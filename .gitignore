@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.ipynb_checkpoints/
+
+# Training and sim scratch
+runs/
+outputs/
+wandb/
+MUJOCO_LOG.TXT
+
+# Large binaries that belong on the HF Hub, not git
+*.mp4
+*.mkv
+*.safetensors
+*.ckpt
+*.parquet
+*.pt
+
+# SO-101 MJCF + meshes, fetched by a script (like B.L.U.S.H sim/fetch_so101.sh)
+sim/assets/so101/
+
+# pip install -e sim/plugin build artefacts
+sim/plugin/*.egg-info/
+
+.DS_Store
