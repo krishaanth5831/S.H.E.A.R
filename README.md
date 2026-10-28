@@ -5,11 +5,13 @@ leaves off flush at the stem, using the stock rigid jaws with a blade at the tip
 rule picks the leaves. The grower sets that rule's parameters (how far up to strip, how many
 leaves to keep, how many cuts per pass). The learned part is the cut itself.
 
+v1 is deleafing. Side-shoot pruning and truss pruning are on the roadmap.
+
 ## Status
 
-Nothing is built yet. The first step is the MuJoCo sim: one stem that collides, and one leaf
-whose petiole the blade can cut. The plan and the research behind the rule are in the Vinea
-vault, under `08 Modules/SHEAR/`.
+Sim step 1 is built: one stem that collides, one leaf whose petiole the blades cut, and
+`sim/check_cut.py` with PASS/FAIL checks and a `--windowed` view (see `sim/README.md`). The plan
+and the research behind the rule are in the Vinea vault, under `08 Modules/SHEAR/`.
 
 ## Git
 
