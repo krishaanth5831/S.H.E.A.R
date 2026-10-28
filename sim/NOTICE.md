@@ -12,3 +12,7 @@ to the real follower's.
 `truss.py` is copied from B.L.U.S.H `sim/tomato.py` (commit e91ef0c): the truss and fruit builder only, not
 the Detacher. Changed: fruit and rachis use SHEAR's plant collision bits (B.L.U.S.H's default 1/1 is SHEAR's
 robot bit), the rachis collides, geoms are named for segmentation, and ripeness comes from the truss stage.
+
+`greenhouse.py` takes the mini greenhouse's geometry from B.L.U.S.H `sim/scene.py` (commit e91ef0c,
+greenhouse_xml), without its camera mast, on SHEAR's collision bits. `lens.py` is copied unchanged and
+`cameras.py` (renderers only) from the same commit. Camera placement is SHEAR's own (`layout.py`).

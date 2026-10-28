@@ -94,6 +94,25 @@ class LeafParams:
     droop_deg: float = DROOP_DEG
     rgba: str = LEAF_RGBA                 # petiole and midrib
     leaflet_rgba: str = LEAFLET_RGBA
+    # "plate": step 1's rectangular leaflets, square to the midrib. "tomato": the compound tomato leaf
+    # (TOMATO_* below): oval leaflets angled toward the tip, growing toward it, small ones in between.
+    style: str = "plate"
+    mid_r: float = MID_R                  # midrib radius
+
+
+# --- the "tomato" leaf style (K7 2026-10-28: the plates didn't look like tomato leaves) ---
+# A tomato leaf is odd-pinnate: 3-4 pairs of primary leaflets along the rachis, a terminal leaflet, and
+# small intercalary leaflets between the pairs (misina-lab notes, research section 6; shape from photos).
+# All angles and ratios are guesses from photos (unverified).
+TOMATO_LEAFLET_FWD_DEG = 55.0      # primary leaflet axis from the rachis, toward the tip
+TOMATO_LEAFLET_HANG_DEG = 15.0     # primary leaflets point this far below the rachis plane
+TOMATO_LEAFLET_ROLL_DEG = 20.0     # each blade rolls so its outer edge hangs (the leaf looks cupped)
+TOMATO_PAIR_AT = 0.80              # primary pair along its rachis segment (0 = segment start)
+TOMATO_SMALL_AT = 0.30             # intercalary pair along the segment
+TOMATO_SMALL_SCALE = 0.30          # intercalary leaflet size vs the primary pair after it
+TOMATO_BASE_PAIR_SCALE = 0.60      # first pair's size vs the last pair; sizes ramp linearly in between
+TOMATO_TIP_SCALE = 1.25            # terminal leaflet vs LeafParams.leaflet_l
+TOMATO_LEAFLET_T = 0.0016          # blade thickness (an ellipsoid's full z extent; visual realism only)
 
 
 def _f(v):
@@ -125,17 +144,52 @@ def _plant_geom(rgba):
             f'friction="{_f(PLANT_FRICTION)}" solref="{_f(CONTACT_SOLREF)}" solimp="{_f(CONTACT_SOLIMP)}"')
 
 
-def stem_xml(pos_xy, z=STEM_Z, stem_r=STEM_R, inner=""):
+def stem_xml(pos_xy, z=STEM_Z, stem_r=STEM_R, inner="", name="stem"):
     """The static stem body: a vertical capsule over z = (bottom, top), plus `inner` geoms (stubs, scars)
     placed in its frame. Returns (xml, stem_pos)."""
     stem_pos = np.array([pos_xy[0], pos_xy[1], 0.5 * (z[0] + z[1])])
-    xml = (f'<body name="stem" pos="{_f(stem_pos)}">'
-           f'<geom name="stem" type="capsule" fromto="0 0 {z[0] - stem_pos[2]:.6f} 0 0 {z[1] - stem_pos[2]:.6f}" '
+    xml = (f'<body name="{name}" pos="{_f(stem_pos)}">'
+           f'<geom name="{name}" type="capsule" fromto="0 0 {z[0] - stem_pos[2]:.6f} 0 0 {z[1] - stem_pos[2]:.6f}" '
            f'size="{stem_r}" {_plant_geom(STEM_RGBA)}/>{inner}</body>')
     return xml, stem_pos
 
 
-def leaf_xml(p, S, a, params=None, stem_pos=None, stem_r=STEM_R):
+def _blade(u, side, roll_deg):
+    """Rotation (columns x, y, z) of a leaflet blade whose long axis is u, rolled so its outer edge hangs."""
+    x = np.asarray(u, float) / np.linalg.norm(u)
+    z = np.array([0.0, 0.0, 1.0]) - x[2] * x
+    z /= np.linalg.norm(z)
+    y = np.cross(z, x)
+    r = np.radians(roll_deg) * side
+    y, z = np.cos(r) * y + np.sin(r) * z, -np.sin(r) * y + np.cos(r) * z
+    return np.column_stack([x, y, z])
+
+
+def _tomato_leaflets(p, i, n, seg, P, m_part, last):
+    """Geoms for midrib segment i (its frame: x along the rachis from the segment start, z up)."""
+    fwd, hang = np.radians(TOMATO_LEAFLET_FWD_DEG), np.radians(TOMATO_LEAFLET_HANG_DEG)
+    ramp = TOMATO_BASE_PAIR_SCALE + (1 - TOMATO_BASE_PAIR_SCALE) * (i / max(n - 1, 1))
+    L, W = P.leaflet_l * ramp, P.leaflet_w * ramp
+    out = []
+    for size, at, tag in ((1.0, TOMATO_PAIR_AT, ""), (TOMATO_SMALL_SCALE, TOMATO_SMALL_AT, "s")):
+        ll, ww = L * size, W * size
+        for sname, sgn in (("l", 1), ("r", -1)):
+            u = np.array([np.cos(fwd) * np.cos(hang), sgn * np.sin(fwd) * np.cos(hang), -np.sin(hang)])
+            c = np.array([at * seg, 0.0, 0.0]) + u * (P.mid_r + ll / 2)
+            out.append(f'<geom name="{p}leaflet{i}{sname}{tag}" type="ellipsoid" '
+                       f'size="{ll / 2:.6f} {ww / 2:.6f} {TOMATO_LEAFLET_T / 2:.6f}" pos="{_f(c)}" '
+                       f'quat="{_f(_quat(_blade(u, sgn, TOMATO_LEAFLET_ROLL_DEG)))}" mass="{m_part * size:.6g}" '
+                       f'{_plant_geom(P.leaflet_rgba)}/>')
+    if last:
+        lt = P.leaflet_l * TOMATO_TIP_SCALE
+        wt = P.leaflet_w * TOMATO_TIP_SCALE
+        out.append(f'<geom name="{p}leaflet_tip" type="ellipsoid" size="{lt / 2:.6f} {wt / 2:.6f} '
+                   f'{TOMATO_LEAFLET_T / 2:.6f}" pos="{seg + lt / 2:.6f} 0 0" mass="{m_part:.6g}" '
+                   f'{_plant_geom(P.leaflet_rgba)}/>')
+    return "".join(out)
+
+
+def leaf_xml(p, S, a, params=None, stem_pos=None, stem_r=STEM_R, stem="stem"):
     """One leaf, every name prefixed with p ("" gives step 1's names: leaf, petiole, stub, midrib0, ...).
 
     S: point on the stem axis where the petiole axis meets it. a: petiole direction, away from the stem.
@@ -163,7 +217,14 @@ def leaf_xml(p, S, a, params=None, stem_pos=None, stem_r=STEM_R):
     for i in reversed(range(n)):
         moment, inertia = G * m_seg * lever(i).sum(), m_seg * (lever(i) ** 2).sum()
         k = moment / np.radians(P.droop_deg)
-        damping = 2 * DROOP_ZETA * np.sqrt(k * inertia)
+        armature = MID_ARMATURE
+        if P.style == "tomato":
+            # ⚠️ The fixed 1e-5 was sized for step 1's 25 g leaf. On a 3 g dwarf leaf it is several times the
+            # leaf's own inertia, and with damping set from the inertia alone the hinges stayed underdamped
+            # (0.2-0.66 rad/s after 2 s, dwarf seeds 0-5). So: armature ~ the tip segment's inertia about its
+            # hinge, and damping from inertia + armature.
+            armature = m_seg * seg ** 2
+        damping = 2 * DROOP_ZETA * np.sqrt(k * (inertia + (armature if P.style == "tomato" else 0.0)))
         last = i == n - 1
         parts = 4 if last else 3                       # midrib + 2 leaflets (+ the tip leaflet)
         pos = (r_s + P.petiole_len, 0, 0) if i == 0 else (seg, 0, 0)
@@ -171,27 +232,33 @@ def leaf_xml(p, S, a, params=None, stem_pos=None, stem_r=STEM_R):
         # (springref 0) still rests at straight.
         bend = np.radians(P.droop_deg)
         quat = (np.cos(bend / 2), 0.0, np.sin(bend / 2), 0.0)
-        y = MID_R + P.leaflet_l / 2
-        leaflets = "".join(
-            f'<geom name="{p}leaflet{i}{s}" type="box" size="{P.leaflet_w / 2} {P.leaflet_l / 2} {LEAFLET_T / 2}" '
-            f'pos="{seg / 2:.6f} {sign * y:.6f} 0" mass="{m_seg / parts:.6g}" {_plant_geom(P.leaflet_rgba)}/>'
-            for s, sign in (("l", 1), ("r", -1)))
-        if last:
+        y = P.mid_r + P.leaflet_l / 2
+        m_mid = m_seg / parts
+        if P.style == "tomato":
+            # 2 primary + 2 small (0.3 x) leaflets (+ the tip) share the segment's leaf mass with the midrib
+            m_mid = m_seg / (1 + 2 * (1 + TOMATO_SMALL_SCALE) + (1 if last else 0))
+            leaflets = _tomato_leaflets(p, i, n, seg, P, m_mid, last)
+        else:
+            leaflets = "".join(
+                f'<geom name="{p}leaflet{i}{s}" type="box" size="{P.leaflet_w / 2} {P.leaflet_l / 2} {LEAFLET_T / 2}" '
+                f'pos="{seg / 2:.6f} {sign * y:.6f} 0" mass="{m_seg / parts:.6g}" {_plant_geom(P.leaflet_rgba)}/>'
+                for s, sign in (("l", 1), ("r", -1)))
+        if last and P.style != "tomato":
             leaflets += (f'<geom name="{p}leaflet_tip" type="box" size="{P.leaflet_l / 2} {P.leaflet_w / 2} '
                          f'{LEAFLET_T / 2}" pos="{seg + P.leaflet_l / 2:.6f} 0 0" mass="{m_seg / parts:.6g}" '
                          f'{_plant_geom(P.leaflet_rgba)}/>')
         inner = (f'<body name="{p}midrib{i}" pos="{_f(pos)}" quat="{_f(quat)}">'
                  f'<joint name="{p}midrib{i}" type="hinge" axis="0 1 0" stiffness="{k:.6g}" damping="{damping:.6g}" '
-                 f'armature="{MID_ARMATURE}" ref="{bend:.6f}" springref="0"/>'
-                 f'<geom name="{p}midrib{i}" type="capsule" fromto="0 0 0 {seg:.6f} 0 0" size="{MID_R}" '
-                 f'mass="{m_seg / parts:.6g}" {_plant_geom(P.rgba)}/>{leaflets}{inner}</body>')
+                 f'armature="{armature:.6g}" ref="{bend:.6f}" springref="0"/>'
+                 f'<geom name="{p}midrib{i}" type="capsule" fromto="0 0 0 {seg:.6f} 0 0" size="{P.mid_r}" '
+                 f'mass="{m_mid:.6g}" {_plant_geom(P.rgba)}/>{leaflets}{inner}</body>')
     leaf = (f'<body name="{p}leaf" pos="{_f(S)}" quat="{_f(_quat(R))}"><freejoint name="{p}leaf"/>'
             f'<geom name="{p}petiole" type="capsule" fromto="0 0 0 {r_s + P.petiole_len:.6f} 0 0" '
             f'size="{P.petiole_r}" mass="{m_pet:.6g}" {_plant_geom(P.rgba)}/>{inner}</body>')
     # No relpose: the weld holds the leaf where it was built (MuJoCo uses the qpos0 pose).
-    eq = (f'<weld name="{p}petiole" body1="stem" body2="{p}leaf" solref="{_f(WELD_SOLREF)}" '
+    eq = (f'<weld name="{p}petiole" body1="{stem}" body2="{p}leaf" solref="{_f(WELD_SOLREF)}" '
           f'solimp="{_f(WELD_SOLIMP)}"/>')
-    return leaf, stub, eq, dict(prefix=p, S=np.asarray(S, float), a=a, S_loc=S_loc, r_s=r_s, stem_r=stem_r,
+    return leaf, stub, eq, dict(prefix=p, stem=stem, S=np.asarray(S, float), a=a, S_loc=S_loc, r_s=r_s, stem_r=stem_r,
                                 base=np.asarray(S, float) + a * r_s)
 
 
@@ -218,7 +285,7 @@ class Cutter:
         p = where.get("prefix", "")
         geom = lambda n: mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, n)
         self.weld = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_EQUALITY, p + "petiole")
-        self.petiole, self.stem, self.stub_geom = geom(p + "petiole"), geom("stem"), geom(p + "stub")
+        self.petiole, self.stem, self.stub_geom = geom(p + "petiole"), geom(where.get("stem", "stem")), geom(p + "stub")
         self.blades = (geom("arm/blade_fixed"), geom("arm/blade_moving"))
         self.leaf = m.body(p + "leaf").id
         self.gripper = m.body("arm/gripper").id

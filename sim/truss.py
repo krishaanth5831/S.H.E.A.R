@@ -10,6 +10,7 @@ Changed from B.L.U.S.H:
 - Rachis, pedicel and calyx geoms have names, for segmentation labels.
 - No Detacher and no break force: SHEAR doesn't pick. The tether weld stays on.
 - The ripeness per fruit comes from the truss stage (stemgen.py), not a random draw.
+- truss_xml takes the fruit radius range, so a dwarf cherry's smaller fruit fit (stemgen profiles).
 """
 import numpy as np
 
@@ -114,7 +115,7 @@ def _fruit(name, local, world, tip, r, rip, threshold, hang=(0.0, 0.0, -1.0), sp
                                ripeness=rip, threshold=threshold, pos=c)
 
 
-def truss_xml(name, rachis_from, rachis_to, n, rng, ripeness=None, avoid=()):
+def truss_xml(name, rachis_from, rachis_to, n, rng, ripeness=None, avoid=(), radius=None):
     """MJCF for one truss: a static rachis capsule with up to n tomatoes hanging off it.
 
     rachis_from/to: world points (m) of the truss stem. ripeness: list of RIPENESS_RGBA keys (len
@@ -142,7 +143,7 @@ def truss_xml(name, rachis_from, rachis_to, n, rng, ripeness=None, avoid=()):
         hang = np.array([np.sin(tilt) * np.cos(az), np.sin(tilt) * np.sin(az), -np.cos(tilt)])
         spin = rng.uniform(0, 2 * np.pi)
         rip = ripeness[i] if ripeness else str(rng.choice(list(RIPENESS_RGBA)))
-        r = rng.uniform(*RADIUS_M)
+        r = rng.uniform(*(radius or RADIUS_M))
         for _ in range(4):
             c = p_world + tip + hang * r
             if all(np.linalg.norm(c - c2) >= r + r2 + FRUIT_GAP_M for c2, r2 in placed):
@@ -150,7 +151,7 @@ def truss_xml(name, rachis_from, rachis_to, n, rng, ripeness=None, avoid=()):
             r *= 0.85
         else:
             continue
-        if r < RADIUS_M[0] * 0.8:
+        if r < (radius or RADIUS_M)[0] * 0.8:
             continue
         ped, body, eq, info = _fruit(f"{name}_t{i}", p_world - mid, p_world, tip, r, rip,
                                      0.0, hang=hang, spin=spin)

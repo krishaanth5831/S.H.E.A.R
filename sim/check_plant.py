@@ -34,10 +34,10 @@ import stemgen as sg
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from rule import check_rule  # noqa: E402
-from rule.select_leaves import LEAF, PRESENT, TRUSS, GREEN, LEAVES_PER_TRUSS, Settings  # noqa: E402
+from rule.select_leaves import LEAF, PRESENT, TRUSS, GREEN  # noqa: E402
 
 N_SEEDS = 400          # property checks (rule + generator only, fast)
-PHYS_SEEDS = (0, 1, 2, 3, 4, 5)
+PHYS_SEEDS = {"dwarf_cherry": (0, 1, 2, 3, 4, 5), "highwire": (0, 1)}
 SETTLE_S = 2.0
 LEAF_SPEED = 0.01      # m/s: a leaf base or fruit still moving faster than this after SETTLE_S hasn't settled
 HINGE_SPEED = 0.05     # rad/s: a midrib hinge still swinging faster than this hasn't settled (step 1 reached 0.25
@@ -82,20 +82,22 @@ def stem_table(spec, sel):
     return "\n".join(lines)
 
 
-def property_checks(report):
-    s = Settings()
+def property_checks(report, profile):
+    P = sg.PROFILES[profile]
+    s = P.settings
     stats = collections.Counter()
     bad = collections.defaultdict(list)
     for seed in range(N_SEEDS):
-        spec = sg.make_plant(seed)
+        spec = sg.make_plant(seed, profile)
         sel = sg.label(spec, s)
         nodes = spec.nodes
         if len(sel.nodes) != len(nodes):
             bad["gap-fill inserted unknowns into sim truth"].append(seed)
             continue
         tr = [i for i, n in enumerate(nodes) if n.kind == TRUSS]
-        if any(sum(nodes[k].kind == LEAF for k in range(a + 1, b)) != LEAVES_PER_TRUSS for a, b in zip(tr, tr[1:])):
-            bad["not three leaves per truss"].append(seed)
+        lo_b, hi_b = P.leaves_between
+        if any(not lo_b <= sum(nodes[k].kind == LEAF for k in range(a + 1, b)) <= hi_b for a, b in zip(tr, tr[1:])):
+            bad["leaves between trusses outside the profile's range"].append(seed)
         for i in sel.cuts:
             n = nodes[i]
             if n.kind != LEAF or n.state != PRESENT:
@@ -128,33 +130,33 @@ def property_checks(report):
             nodes[i].state == PRESENT and any(nodes[k].kind == LEAF and nodes[k].state == "scar"
                                               for k in range(i + 1, len(nodes)))
             for i in range(len(nodes)) if nodes[i].kind == LEAF)
-    for name in ("gap-fill inserted unknowns into sim truth", "not three leaves per truss",
+    for name in ("gap-fill inserted unknowns into sim truth", "leaves between trusses outside the profile's range",
                  "a cut that isn't a present leaf", "a cut above the strip line", "a cut outside the built band",
                  "a green leaf cut on a young crop", "cuts not oldest first", "over the pass cap",
                  "keep guard broken", "a flag that isn't yellow/diseased above the line"):
         seeds = bad.get(name, [])
-        report(not seeds, f"{N_SEEDS} plants, never {name}" + (f": seeds {seeds[:8]}" if seeds else ""))
+        report(not seeds, f"{profile}: {N_SEEDS} plants, never {name}" + (f": seeds {seeds[:8]}" if seeds else ""))
     need = ("0 cuts", ">=1 cut", "full cap", "guard bites", "cap bites", "flags", "young crop", "missed leaf below a scar")
     missing = [k for k in need if stats[k] == 0]
-    report(not missing, "labels vary across seeds: " + ", ".join(f"{k} {stats[k]}" for k in need)
+    report(not missing, f"{profile}: labels vary across seeds: " + ", ".join(f"{k} {stats[k]}" for k in need)
            + (f" (never: {missing})" if missing else ""))
 
 
-def physics_checks(report):
+def physics_checks(report, profile):
     arm = sc.arm_spec().compile()
     n_arm = arm.ngeom
-    for seed in PHYS_SEEDS:
-        spec = sg.make_plant(seed)
+    for seed in PHYS_SEEDS[profile]:
+        spec = sg.make_plant(seed, profile)
         t0 = time.time()
         m, d, where = build(spec)
         sel = sg.label(spec)
         total = m.ngeom - 1 + n_arm               # floor counted once (arm model has none)
-        report(total <= sg.GEOM_BUDGET, f"seed {seed}: compiles, {m.ngeom - 1} plant geoms + {n_arm} arm = {total} "
+        report(total <= sg.GEOM_BUDGET, f"{profile} seed {seed}: compiles, {m.ngeom - 1} plant geoms + {n_arm} arm = {total} "
                f"(soft budget {sg.GEOM_BUDGET}); {len(where)} leaves, "
                f"{sum(1 for i in spec.truss)} trusses, {m.nbody} bodies")
         names = [m.geom(g).name for g in range(m.ngeom) if m.geom(g).name != "floor"]
         unclassed = [g for g in names if sg.seg_class(g) is None]
-        wrong_node = [g for g in names if g != "stem" and (sg.node_of(g) is None or
+        wrong_node = [g for g in names if sg.seg_class(g) not in sg.NODELESS and (sg.node_of(g) is None or
                       (spec.nodes[sg.node_of(g)].kind == TRUSS) != (sg.seg_class(g) in ("rachis", "calyx", "pedicel", "fruit")))]
         report(not unclassed and not wrong_node, f"seed {seed}: every geom has a segmentation class and its node "
                f"({len(names)} geoms; unclassed {unclassed[:3]}, wrong node {wrong_node[:3]})")
@@ -204,16 +206,18 @@ def run_checks():
     print("-- the rule's golden cases (rule/check_rule.py)")
     fails += check_rule.main() != 0
     print("\n-- the generator and the rule over many plants")
-    property_checks(report)
+    for profile in sg.PROFILES:
+        property_checks(report, profile)
     print("\n-- plants built in MuJoCo")
-    physics_checks(report)
+    for profile in sg.PROFILES:
+        physics_checks(report, profile)
     print("\nALL PASS" if not fails else f"\n{fails} FAIL")
     return 1 if fails else 0
 
 
-def windowed(seed, truth, leaf_len):
+def windowed(seed, truth, profile, leaf_scale):
     import mujoco.viewer
-    spec = sg.make_plant(seed, leaf_len)
+    spec = sg.make_plant(seed, profile, leaf_scale)
     m, d, where = build(spec)
     sel = sg.label(spec)
     print(f"seed {seed}{' (young crop)' if spec.young else ''}: stem top first, 'above' = abstract (no geoms)")
@@ -241,10 +245,11 @@ def main():
     ap.add_argument("--windowed", action="store_true", help="watch one plant settle, leaves coloured by the rule")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--truth", action="store_true", help="windowed: the plant's own colours, not the labels")
-    ap.add_argument("--leaf-len", type=float, default=pl.LEAF_LEN, help="stem surface to leaf tip, m (unverified)")
+    ap.add_argument("--profile", choices=tuple(sg.PROFILES), default=sg.DEFAULT_PROFILE)
+    ap.add_argument("--leaf-scale", type=float, default=1.0, help="multiply every leaf length (unverified sizes)")
     a = ap.parse_args()
     if a.windowed:
-        windowed(a.seed, a.truth, a.leaf_len)
+        windowed(a.seed, a.truth, a.profile, a.leaf_scale)
         return 0
     return run_checks()
 

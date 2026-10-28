@@ -28,6 +28,7 @@ TURNED = ("turning", "ripe")
 
 # A cultivated indeterminate tomato grows three leaves, then a truss, with no end (Development 125:1979,
 # in the research note). Used to fill gaps: fewer leaves than this between two trusses = some unseen.
+# Settings.leaves_per_truss overrides it for other growth habits.
 LEAVES_PER_TRUSS = 3
 
 
@@ -59,6 +60,10 @@ class Settings:
     # Don't wound a wet canopy: no cuts at all at or over this relative humidity, % (extension sources put
     # the Botrytis line near 90 % RH; weak, grower setting).
     wound_gate_rh: float = 90.0
+    # The crop's growth habit, for the gap-fill: the fewest leaves between two trusses. 3 for an
+    # indeterminate high-wire tomato. A determinate (self-pruning) dwarf puts a truss every 1-2 leaves,
+    # so 1: the gap-fill then only fills a gap with no leaf at all.
+    leaves_per_truss: int = LEAVES_PER_TRUSS
 
 
 @dataclass
@@ -91,7 +96,7 @@ DECISIONS = {
 }
 
 
-def fill_gaps(nodes):
+def fill_gaps(nodes, leaves_per_truss=LEAVES_PER_TRUSS):
     """Step 1. Between two trusses there are LEAVES_PER_TRUSS leaf nodes (present, scar or unknown). If
     fewer show, the missing ones go in as UNKNOWN right above the lower truss. ⚠️ Where they really sit
     isn't known; putting them at the bottom of the gap is the cautious choice: above the anchor they take
@@ -100,7 +105,7 @@ def fill_gaps(nodes):
     trusses = [i for i, n in enumerate(nodes) if n.kind == TRUSS]
     out = list(nodes)
     for lo, hi in reversed(list(zip(trusses, trusses[1:]))):
-        missing = LEAVES_PER_TRUSS - sum(n.kind == LEAF for n in nodes[lo + 1:hi])
+        missing = leaves_per_truss - sum(n.kind == LEAF for n in nodes[lo + 1:hi])
         for _ in range(max(0, missing)):
             out.insert(lo + 1, Node(LEAF, state=UNKNOWN, filled=True))
     return out
@@ -109,7 +114,7 @@ def fill_gaps(nodes):
 def select_leaves(nodes, settings=None, conditions=None):
     s = settings or Settings()
     c = conditions or Conditions()
-    nodes = fill_gaps(nodes)                                            # step 1
+    nodes = fill_gaps(nodes, s.leaves_per_truss)                        # step 1
     sel = Selection(nodes=nodes)
     leaves = [i for i, n in enumerate(nodes) if n.kind == LEAF]
     for i in leaves:

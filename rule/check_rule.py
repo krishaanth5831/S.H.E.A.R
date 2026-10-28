@@ -58,6 +58,10 @@ CASES = [
      "g y g", Settings(min_leaves_kept=0), None, [], {1: "flag"}),
     ("an unknown below the line is never cut",
      "? s g T:r", Settings(min_leaves_kept=0), None, [2], {0: "unknown", 1: "scar"}),
+    ("determinate dwarf (leaves_per_truss 1): a truss every leaf is no gap",
+     "s g T:r g T:t g T:g", Settings(min_leaves_kept=0, leaves_per_truss=1), None, [1, 3], {5: "keep"}),
+    ("same stem as indeterminate (3): the gaps fill with unknowns and nothing above the anchor is cut",
+     "s g T:r g T:t g T:g", Settings(min_leaves_kept=0), None, [1], {3: "unknown"}),
     ("diseased below the line is cut like any other",
      "d g T:t g", Settings(min_leaves_kept=0), None, [0, 1, 3], {}),
 ]
