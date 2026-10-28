@@ -9,9 +9,13 @@ v1 is deleafing. Side-shoot pruning and truss pruning are on the roadmap.
 
 ## Status
 
-Sim step 1 is built: one stem that collides, one leaf whose petiole the blades cut, and
-`sim/check_cut.py` with PASS/FAIL checks and a `--windowed` view (see `sim/README.md`). The plan
-and the research behind the rule are in the Vinea vault, under `08 Modules/SHEAR/`.
+Sim steps 1 and 2 are built.
+- Step 1: one stem that collides, one leaf whose petiole the blades cut, `sim/check_cut.py`.
+- Step 2: random plants (`sim/stemgen.py`) and the leaf rule (`rule/select_leaves.py`) that labels which
+  leaves come off, `sim/check_plant.py`.
+
+Each check prints PASS/FAIL and has a `--windowed` view (see `sim/README.md`). The plan and the research
+behind the rule are in the Vinea vault, under `08 Modules/SHEAR/`.
 
 ## Git
 

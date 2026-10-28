@@ -8,3 +8,7 @@ the fingers as colliders, each fingertip gets a blade, and the gripper's range a
 to the real follower's.
 
 `fetch_so101.sh` is copied from B.L.U.S.H (`krishaanth5831/B.L.U.S.H`, `sim/`, commit e91ef0c).
+
+`truss.py` is copied from B.L.U.S.H `sim/tomato.py` (commit e91ef0c): the truss and fruit builder only, not
+the Detacher. Changed: fruit and rachis use SHEAR's plant collision bits (B.L.U.S.H's default 1/1 is SHEAR's
+robot bit), the rachis collides, geoms are named for segmentation, and ripeness comes from the truss stage.

@@ -1,6 +1,7 @@
-"""One tomato stem and one leaf for SHEAR sim step 1, and the cut.
+"""Tomato stem and leaves for the SHEAR sim, and the cut.
 
-    body_xml, eq_xml, where = plant_xml(S, a)   stem vertical through S, leaf from S along a
+    body_xml, eq_xml, where = plant_xml(S, a)   step 1: stem vertical through S, one leaf from S along a
+    leaf, stub, eq, where = leaf_xml(p, S, a, params, stem_pos)   one leaf, names prefixed with p (step 2)
     cutter = Cutter(m, d, where, cut_force)     call cutter.step() after every mj_step
 
 The stem is a static capsule. The leaf is one free body welded to the stem: a rigid petiole, then a
@@ -13,6 +14,8 @@ weld goes off, the leaf stops colliding with anything but the floor (so it falls
 and the stub left on the stem is drawn. Stub length = distance along the petiole from the stem surface
 to the blade plane at the moment of the cut, so it isn't rounded to a segment length.
 """
+from dataclasses import dataclass
+
 import mujoco
 import numpy as np
 
@@ -78,6 +81,21 @@ STEM_RGBA, LEAF_RGBA, LEAFLET_RGBA = "0.35 0.55 0.25 1", "0.30 0.60 0.25 1", "0.
 STUB_RGBA = "0.55 0.45 0.25 1"           # cut face colour, so the stub stands out
 
 
+@dataclass
+class LeafParams:
+    """One leaf's sizes. The defaults are step 1's leaf; stemgen.py draws a different one per node."""
+    length: float = LEAF_LEN              # stem surface to leaf tip
+    mass: float = LEAF_MASS
+    n_seg: int = N_MID                    # midrib segments, one leaflet pair each, plus the tip leaflet
+    petiole_r: float = PETIOLE_R
+    petiole_len: float = PETIOLE_LEN
+    leaflet_l: float = LEAFLET_L
+    leaflet_w: float = LEAFLET_W
+    droop_deg: float = DROOP_DEG
+    rgba: str = LEAF_RGBA                 # petiole and midrib
+    leaflet_rgba: str = LEAFLET_RGBA
+
+
 def _f(v):
     return " ".join(f"{x:.6f}" for x in np.ravel(v))
 
@@ -96,10 +114,10 @@ def leaf_frame(a):
     return np.column_stack([x, np.cross(z, x), z])
 
 
-def surface_dist(a):
+def surface_dist(a, stem_r=STEM_R):
     """Distance along the petiole axis from the (vertical) stem axis to the stem surface."""
     a = np.asarray(a, float) / np.linalg.norm(a)
-    return STEM_R / np.sqrt(1.0 - a[2] ** 2)
+    return stem_r / np.sqrt(1.0 - a[2] ** 2)
 
 
 def _plant_geom(rgba):
@@ -107,57 +125,83 @@ def _plant_geom(rgba):
             f'friction="{_f(PLANT_FRICTION)}" solref="{_f(CONTACT_SOLREF)}" solimp="{_f(CONTACT_SOLIMP)}"')
 
 
-def plant_xml(S, a, leaf_len=LEAF_LEN):
-    """S: point on the stem axis where the petiole axis meets it. a: petiole direction, away from the stem."""
+def stem_xml(pos_xy, z=STEM_Z, stem_r=STEM_R, inner=""):
+    """The static stem body: a vertical capsule over z = (bottom, top), plus `inner` geoms (stubs, scars)
+    placed in its frame. Returns (xml, stem_pos)."""
+    stem_pos = np.array([pos_xy[0], pos_xy[1], 0.5 * (z[0] + z[1])])
+    xml = (f'<body name="stem" pos="{_f(stem_pos)}">'
+           f'<geom name="stem" type="capsule" fromto="0 0 {z[0] - stem_pos[2]:.6f} 0 0 {z[1] - stem_pos[2]:.6f}" '
+           f'size="{stem_r}" {_plant_geom(STEM_RGBA)}/>{inner}</body>')
+    return xml, stem_pos
+
+
+def leaf_xml(p, S, a, params=None, stem_pos=None, stem_r=STEM_R):
+    """One leaf, every name prefixed with p ("" gives step 1's names: leaf, petiole, stub, midrib0, ...).
+
+    S: point on the stem axis where the petiole axis meets it. a: petiole direction, away from the stem.
+    stem_pos: the stem body's position (the stub geom goes in the stem body's frame).
+    Returns (leaf_body_xml, stub_geom_xml for the stem body, weld_xml, where).
+    """
+    P = params or LeafParams()
     R = leaf_frame(a)
     a = R[:, 0]
-    r_s = surface_dist(a)
-    stem_pos = np.array([S[0], S[1], 0.5 * (STEM_Z[0] + STEM_Z[1])])
+    r_s = surface_dist(a, stem_r)
     S_loc = np.asarray(S, float) - stem_pos
     # The stub: hidden (group 5) until a cut, then stretched from the stem axis to the cut plane.
     Rs = np.column_stack([np.cross(a, R[:, 1]), R[:, 1], a])    # capsule axis (local z) along a
-    stem = (f'<body name="stem" pos="{_f(stem_pos)}">'
-            f'<geom name="stem" type="capsule" fromto="0 0 {STEM_Z[0] - stem_pos[2]:.6f} 0 0 {STEM_Z[1] - stem_pos[2]:.6f}" '
-            f'size="{STEM_R}" {_plant_geom(STEM_RGBA)}/>'
-            f'<geom name="stub" type="capsule" size="{PETIOLE_R * 1.02:.6f} {r_s / 2:.6f}" pos="{_f(S_loc + a * r_s / 2)}" '
-            f'quat="{_f(_quat(Rs))}" contype="0" conaffinity="0" group="5" rgba="{STUB_RGBA}"/></body>')
+    stub = (f'<geom name="{p}stub" type="capsule" size="{P.petiole_r * 1.02:.6f} {r_s / 2:.6f}" '
+            f'pos="{_f(S_loc + a * r_s / 2)}" quat="{_f(_quat(Rs))}" contype="0" conaffinity="0" group="5" '
+            f'rgba="{STUB_RGBA}"/>')
 
-    seg = (leaf_len - PETIOLE_LEN) / N_MID
-    m_pet = PETIOLE_MASS_FRAC * LEAF_MASS
-    m_seg = (1.0 - PETIOLE_MASS_FRAC) * LEAF_MASS / N_MID
-    # Hinge i carries segments i..N-1. Spring: their weight held straight out bends it DROOP_DEG.
-    lever = lambda i: (np.arange(i, N_MID) - i + 0.5) * seg
+    n = P.n_seg
+    seg = (P.length - P.petiole_len) / n
+    m_pet = PETIOLE_MASS_FRAC * P.mass
+    m_seg = (1.0 - PETIOLE_MASS_FRAC) * P.mass / n
+    # Hinge i carries segments i..N-1. Spring: their weight held straight out bends it droop_deg.
+    lever = lambda i: (np.arange(i, n) - i + 0.5) * seg
     inner = ""
-    for i in reversed(range(N_MID)):
+    for i in reversed(range(n)):
         moment, inertia = G * m_seg * lever(i).sum(), m_seg * (lever(i) ** 2).sum()
-        k = moment / np.radians(DROOP_DEG)
+        k = moment / np.radians(P.droop_deg)
         damping = 2 * DROOP_ZETA * np.sqrt(k * inertia)
-        last = i == N_MID - 1
+        last = i == n - 1
         parts = 4 if last else 3                       # midrib + 2 leaflets (+ the tip leaflet)
-        pos = (r_s + PETIOLE_LEN, 0, 0) if i == 0 else (seg, 0, 0)
-        # Built bent by DROOP_DEG: ref = that angle, so qpos0 is the bent pose, and the spring
+        pos = (r_s + P.petiole_len, 0, 0) if i == 0 else (seg, 0, 0)
+        # Built bent by droop_deg: ref = that angle, so qpos0 is the bent pose, and the spring
         # (springref 0) still rests at straight.
-        bend = np.radians(DROOP_DEG)
+        bend = np.radians(P.droop_deg)
         quat = (np.cos(bend / 2), 0.0, np.sin(bend / 2), 0.0)
-        y = MID_R + LEAFLET_L / 2
+        y = MID_R + P.leaflet_l / 2
         leaflets = "".join(
-            f'<geom name="leaflet{i}{s}" type="box" size="{LEAFLET_W / 2} {LEAFLET_L / 2} {LEAFLET_T / 2}" '
-            f'pos="{seg / 2:.6f} {sign * y:.6f} 0" mass="{m_seg / parts:.6g}" {_plant_geom(LEAFLET_RGBA)}/>'
+            f'<geom name="{p}leaflet{i}{s}" type="box" size="{P.leaflet_w / 2} {P.leaflet_l / 2} {LEAFLET_T / 2}" '
+            f'pos="{seg / 2:.6f} {sign * y:.6f} 0" mass="{m_seg / parts:.6g}" {_plant_geom(P.leaflet_rgba)}/>'
             for s, sign in (("l", 1), ("r", -1)))
         if last:
-            leaflets += (f'<geom name="leaflet_tip" type="box" size="{LEAFLET_L / 2} {LEAFLET_W / 2} {LEAFLET_T / 2}" '
-                         f'pos="{seg + LEAFLET_L / 2:.6f} 0 0" mass="{m_seg / parts:.6g}" {_plant_geom(LEAFLET_RGBA)}/>')
-        inner = (f'<body name="midrib{i}" pos="{_f(pos)}" quat="{_f(quat)}">'
-                 f'<joint name="midrib{i}" type="hinge" axis="0 1 0" stiffness="{k:.6g}" damping="{damping:.6g}" '
+            leaflets += (f'<geom name="{p}leaflet_tip" type="box" size="{P.leaflet_l / 2} {P.leaflet_w / 2} '
+                         f'{LEAFLET_T / 2}" pos="{seg + P.leaflet_l / 2:.6f} 0 0" mass="{m_seg / parts:.6g}" '
+                         f'{_plant_geom(P.leaflet_rgba)}/>')
+        inner = (f'<body name="{p}midrib{i}" pos="{_f(pos)}" quat="{_f(quat)}">'
+                 f'<joint name="{p}midrib{i}" type="hinge" axis="0 1 0" stiffness="{k:.6g}" damping="{damping:.6g}" '
                  f'armature="{MID_ARMATURE}" ref="{bend:.6f}" springref="0"/>'
-                 f'<geom name="midrib{i}" type="capsule" fromto="0 0 0 {seg:.6f} 0 0" size="{MID_R}" '
-                 f'mass="{m_seg / parts:.6g}" {_plant_geom(LEAF_RGBA)}/>{leaflets}{inner}</body>')
-    leaf = (f'<body name="leaf" pos="{_f(S)}" quat="{_f(_quat(R))}"><freejoint name="leaf"/>'
-            f'<geom name="petiole" type="capsule" fromto="0 0 0 {r_s + PETIOLE_LEN:.6f} 0 0" size="{PETIOLE_R}" '
-            f'mass="{m_pet:.6g}" {_plant_geom(LEAF_RGBA)}/>{inner}</body>')
+                 f'<geom name="{p}midrib{i}" type="capsule" fromto="0 0 0 {seg:.6f} 0 0" size="{MID_R}" '
+                 f'mass="{m_seg / parts:.6g}" {_plant_geom(P.rgba)}/>{leaflets}{inner}</body>')
+    leaf = (f'<body name="{p}leaf" pos="{_f(S)}" quat="{_f(_quat(R))}"><freejoint name="{p}leaf"/>'
+            f'<geom name="{p}petiole" type="capsule" fromto="0 0 0 {r_s + P.petiole_len:.6f} 0 0" '
+            f'size="{P.petiole_r}" mass="{m_pet:.6g}" {_plant_geom(P.rgba)}/>{inner}</body>')
     # No relpose: the weld holds the leaf where it was built (MuJoCo uses the qpos0 pose).
-    eq = f'<weld name="petiole" body1="stem" body2="leaf" solref="{_f(WELD_SOLREF)}" solimp="{_f(WELD_SOLIMP)}"/>'
-    return stem + leaf, eq, dict(S=np.asarray(S, float), a=a, S_loc=S_loc, r_s=r_s)
+    eq = (f'<weld name="{p}petiole" body1="stem" body2="{p}leaf" solref="{_f(WELD_SOLREF)}" '
+          f'solimp="{_f(WELD_SOLIMP)}"/>')
+    return leaf, stub, eq, dict(prefix=p, S=np.asarray(S, float), a=a, S_loc=S_loc, r_s=r_s, stem_r=stem_r,
+                                base=np.asarray(S, float) + a * r_s)
+
+
+def plant_xml(S, a, leaf_len=LEAF_LEN):
+    """Step 1: the stem through S and one leaf. S: point on the stem axis where the petiole axis meets it.
+    a: petiole direction, away from the stem."""
+    stem_pos = np.array([S[0], S[1], 0.5 * (STEM_Z[0] + STEM_Z[1])])
+    leaf, stub, eq, where = leaf_xml("", S, a, LeafParams(length=leaf_len), stem_pos)
+    stem, _ = stem_xml(S[:2], inner=stub)
+    return stem + leaf, eq, where
 
 
 class Cutter:
@@ -171,11 +215,12 @@ class Cutter:
 
     def __init__(self, m, d, where, cut_force=CUT_FORCE_N):
         self.m, self.d, self.where, self.cut_force = m, d, where, cut_force
+        p = where.get("prefix", "")
         geom = lambda n: mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, n)
-        self.weld = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_EQUALITY, "petiole")
-        self.petiole, self.stem, self.stub_geom = geom("petiole"), geom("stem"), geom("stub")
+        self.weld = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_EQUALITY, p + "petiole")
+        self.petiole, self.stem, self.stub_geom = geom(p + "petiole"), geom("stem"), geom(p + "stub")
         self.blades = (geom("arm/blade_fixed"), geom("arm/blade_moving"))
-        self.leaf = m.body("leaf").id
+        self.leaf = m.body(p + "leaf").id
         self.gripper = m.body("arm/gripper").id
         root = m.body_rootid[m.geom_bodyid]
         self.leaf_geoms = np.flatnonzero(root == self.leaf)
@@ -247,7 +292,7 @@ class Cutter:
         m, d, w = self.m, self.d, self.where
         S, a = d.xpos[self.leaf], d.xmat[self.leaf].reshape(3, 3)[:, 0]
         plane = np.mean([d.geom_xpos[b] for b in self.blades], axis=0)   # both blades share one plane
-        self.stub = float((plane - S) @ a - surface_dist(a))
+        self.stub = float((plane - S) @ a - surface_dist(a, w["stem_r"]))
         self.cut_t, self.squeeze_at_cut, self.just_cut = d.time, self.squeeze, True
         d.eq_active[self.weld] = 0
         m.geom_contype[self.leaf_geoms], m.geom_conaffinity[self.leaf_geoms] = FALLEN_BITS
