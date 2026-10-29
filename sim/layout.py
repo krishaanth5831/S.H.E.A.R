@@ -101,7 +101,8 @@ def mast_xml():
     return "".join(g)
 
 
-def build(seeds=(11, 12, 13), arm=True, profile=sg.DEFAULT_PROFILE, leaf_scale=1.0, target=0):
+def build(seeds=(11, 12, 13), arm=True, profile=sg.DEFAULT_PROFILE, leaf_scale=1.0, target=0, arm_xy=None, arm_yaw=ARM_YAW):
+    """arm_xy / arm_yaw: put the arm's base elsewhere (reach.py slides it along the aisle; default: in front of p0)."""
     specs, bodies, eqs, where, stems = [], [], [], {}, []
     for k, seed in enumerate(seeds):
         spec = sg.make_plant(seed, profile, leaf_scale)
@@ -114,19 +115,15 @@ def build(seeds=(11, 12, 13), arm=True, profile=sg.DEFAULT_PROFILE, leaf_scale=1
     # A pale sky, so the frames aren't black above the plants (cosmetic, unverified colours).
     world.add_texture(name="sky", type=mujoco.mjtTexture.mjTEXTURE_SKYBOX, builtin=mujoco.mjtBuiltin.mjBUILTIN_GRADIENT,
                       rgb1=(0.85, 0.90, 0.95), rgb2=(0.55, 0.65, 0.75), width=256, height=1536)
-    base = np.array([ARM_X, AISLE_Y, 0.0])
+    base = np.array([*(arm_xy or (ARM_X, AISLE_Y)), 0.0])
     if arm:
         s = sc.arm_spec()
         cam = s.body("wrist_camera").add_camera(name="claw", pos=CLAW_POS_IN_BODY, fovy=LENSES["claw"].fovy)
         cam.alt.type = mujoco.mjtOrientation.mjORIENTATION_XYAXES
         cam.alt.xyaxes = CLAW_XYAXES
-        frame = world.worldbody.add_frame(pos=base, quat=(np.cos(ARM_YAW / 2), 0, 0, np.sin(ARM_YAW / 2)))
+        frame = world.worldbody.add_frame(pos=base, quat=(np.cos(arm_yaw / 2), 0, 0, np.sin(arm_yaw / 2)))
         world.attach(s, frame=frame, prefix="arm/")
-        # ⚠️ Same blade pair as scene.build: parent/child bodies skip contacts without it.
-        p = world.add_pair(geomname1="arm/blade_fixed", geomname2="arm/blade_moving")
-        p.condim = 3
-        p.solref, p.solimp = pl.CONTACT_SOLREF, pl.CONTACT_SOLIMP
-        p.friction = (0.3, 0.3, 0.005, 0.0001, 0.0001)
+        sc.add_blade_pairs(world)          # ⚠️ parent/child bodies skip contacts without the pairs
     m = world.compile()
     # The offscreen buffer must fit the pinhole renders, not just 640x480 (lens.py).
     m.vis.global_.offwidth, m.vis.global_.offheight = pinhole_size()
@@ -142,6 +139,6 @@ def build(seeds=(11, 12, 13), arm=True, profile=sg.DEFAULT_PROFILE, leaf_scale=1
             d.qpos[m.joint("arm/" + j).qposadr[0]] = v
             d.ctrl[m.actuator("arm/" + j).id] = v
     mujoco.mj_forward(m, d)
-    info = dict(specs=specs, where=where, stems=stems, target_plant=target, arm_base=base, arm_yaw=ARM_YAW,
+    info = dict(specs=specs, where=where, stems=stems, target_plant=target, arm_base=base, arm_yaw=arm_yaw,
                 ready=ready, ready_err=ready_err)
     return m, d, info

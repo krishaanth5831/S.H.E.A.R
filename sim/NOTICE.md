@@ -16,3 +16,7 @@ robot bit), the rachis collides, geoms are named for segmentation, and ripeness 
 `greenhouse.py` takes the mini greenhouse's geometry from B.L.U.S.H `sim/scene.py` (commit e91ef0c,
 greenhouse_xml), without its camera mast, on SHEAR's collision bits. `lens.py` is copied unchanged and
 `cameras.py` (renderers only) from the same commit. Camera placement is SHEAR's own (`layout.py`).
+
+`arm_map.py` is copied unchanged from B.L.U.S.H `sim/arm_map.py` (commit 5c12eea). `cutpose.py` copies the
+Levenberg-Marquardt loop and the sampled warm starts of B.L.U.S.H `sim/expert.py` `ArmIK` (commit cec86fb); its
+residuals are SHEAR's own. `cameras.py` gained `depth()` and `cam_depth()` (SHEAR step 4).

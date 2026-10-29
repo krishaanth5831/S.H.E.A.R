@@ -39,6 +39,12 @@ LEAFLET_L, LEAFLET_W, LEAFLET_T = 0.060, 0.030, 0.001   # leaflet plate, guess (
 # bent this far, so it starts close to hanging still instead of falling from straight.
 DROOP_DEG = 8.0
 DROOP_ZETA = 0.5          # damping ratio per hinge. ⚠️ 1.0 went unstable (the tip hinge spun up to 16 rad/s)
+# Petiole bending (LeafParams.bend, step 3). ⚠️ With the near-rigid weld a petiole the moving blade has to
+# push onto the fixed edge sends the squeeze into the weld instead of the cut: 0.5 mm of sag between the
+# petiole and the fixed edge and the blades never both bit (check_approach.py, 2026-10-29). A real petiole bends.
+# Lumped as a ball joint at the stem surface, stiffness EI/L of a solid rod over the petiole length:
+PETIOLE_E = 50e6          # Pa, green plant tissue, middle of ~10-100 MPa (unverified: measure a petiole's bend)
+PETIOLE_BEND_ZETA = 0.5   # as the midrib hinges
 # ⚠️ Numerical: without it the light tip hinge kept ringing at 0.25 rad/s after 3 s. 1e-5 kg.m^2 is
 # about the tip segment's own inertia about its hinge.
 MID_ARMATURE = 1e-5
@@ -51,6 +57,10 @@ MID_ARMATURE = 1e-5
 #   - a spiral pull-and-cut end-effector on a tomato "lateral branch": 66.3 N cutting plus 32.5 N
 #     traction (Sun et al. 2024, Agriculture 14(12):2281; not a blade)
 CUT_FORCE_N = 15.0
+# Thinner petioles need less. ⚠️ unverified: the cut force taken as proportional to the petiole's diameter
+# (the literature above quotes N per mm of stem diameter), from the 15 N / 7 mm placeholder: 2.1 N/mm,
+# inside the 0.2-5.5 N/mm bracket. A 3 mm dwarf petiole then needs 6.4 N. cut_force_for() applies it.
+CUT_FORCE_PER_MM = CUT_FORCE_N / 7.0
 # The force has to hold this long, like a real stroke: the edges travel through a 7 mm stalk in about
 # 60 ms at the jaw's ramped closing speed (unverified). ⚠️ It also keeps the impact spike of the blade
 # landing from counting as a cut: at 25 % torque that spike stayed above the cut force for 28 ms.
@@ -98,6 +108,9 @@ class LeafParams:
     # (TOMATO_* below): oval leaflets angled toward the tip, growing toward it, small ones in between.
     style: str = "plate"
     mid_r: float = MID_R                  # midrib radius
+    # Petiole bending: None = rigid (step 1). True = a ball joint at the stem surface with the bending
+    # stiffness of a solid green rod (petiole_k), so a blade can push the petiole onto the other edge.
+    bend: bool = False
 
 
 # --- the "tomato" leaf style (K7 2026-10-28: the plates didn't look like tomato leaves) ---
@@ -113,6 +126,11 @@ TOMATO_SMALL_SCALE = 0.30          # intercalary leaflet size vs the primary pai
 TOMATO_BASE_PAIR_SCALE = 0.60      # first pair's size vs the last pair; sizes ramp linearly in between
 TOMATO_TIP_SCALE = 1.25            # terminal leaflet vs LeafParams.leaflet_l
 TOMATO_LEAFLET_T = 0.0016          # blade thickness (an ellipsoid's full z extent; visual realism only)
+
+
+def cut_force_for(petiole_r):
+    """The placeholder cut force for a petiole of this radius (CUT_FORCE_PER_MM, unverified)."""
+    return CUT_FORCE_PER_MM * 2 * petiole_r * 1000
 
 
 def _f(v):
@@ -227,7 +245,8 @@ def leaf_xml(p, S, a, params=None, stem_pos=None, stem_r=STEM_R, stem="stem"):
         damping = 2 * DROOP_ZETA * np.sqrt(k * (inertia + (armature if P.style == "tomato" else 0.0)))
         last = i == n - 1
         parts = 4 if last else 3                       # midrib + 2 leaflets (+ the tip leaflet)
-        pos = (r_s + P.petiole_len, 0, 0) if i == 0 else (seg, 0, 0)
+        # bend: midrib0 hangs off the petiole body, which starts at the stem surface (r_s)
+        pos = ((P.petiole_len if P.bend else r_s + P.petiole_len), 0, 0) if i == 0 else (seg, 0, 0)
         # Built bent by droop_deg: ref = that angle, so qpos0 is the bent pose, and the spring
         # (springref 0) still rests at straight.
         bend = np.radians(P.droop_deg)
@@ -252,9 +271,20 @@ def leaf_xml(p, S, a, params=None, stem_pos=None, stem_r=STEM_R, stem="stem"):
                  f'armature="{armature:.6g}" ref="{bend:.6f}" springref="0"/>'
                  f'<geom name="{p}midrib{i}" type="capsule" fromto="0 0 0 {seg:.6f} 0 0" size="{P.mid_r}" '
                  f'mass="{m_mid:.6g}" {_plant_geom(P.rgba)}/>{leaflets}{inner}</body>')
-    leaf = (f'<body name="{p}leaf" pos="{_f(S)}" quat="{_f(_quat(R))}"><freejoint name="{p}leaf"/>'
-            f'<geom name="{p}petiole" type="capsule" fromto="0 0 0 {r_s + P.petiole_len:.6f} 0 0" '
-            f'size="{P.petiole_r}" mass="{m_pet:.6g}" {_plant_geom(P.rgba)}/>{inner}</body>')
+    pet = (f'<geom name="{p}petiole" type="capsule" fromto="0 0 0 {r_s + P.petiole_len:.6f} 0 0" '
+           f'size="{P.petiole_r}" mass="{m_pet:.6g}" {_plant_geom(P.rgba)}/>{inner}')
+    if P.bend:
+        # The welded body is a small stub inside the stem; the petiole and the rest of the leaf hang off it on
+        # a ball joint at the stem surface. Same geoms, names and positions as the rigid leaf.
+        k = PETIOLE_E * np.pi * P.petiole_r ** 4 / 4 / P.petiole_len
+        inertia = P.mass * (P.length / 2) ** 2              # whole leaf about its base, rough
+        damping = 2 * PETIOLE_BEND_ZETA * np.sqrt(k * inertia)
+        pet = (f'<inertial pos="0 0 0" mass="{0.1 * m_pet:.6g}" diaginertia="1e-9 1e-9 1e-9"/>'
+               f'<body name="{p}petiole" pos="{r_s:.6f} 0 0"><joint name="{p}petiole" type="ball" '
+               f'stiffness="{k:.6g}" damping="{damping:.6g}" armature="{MID_ARMATURE:.6g}"/>'
+               f'<geom name="{p}petiole" type="capsule" fromto="{-r_s:.6f} 0 0 {P.petiole_len:.6f} 0 0" '
+               f'size="{P.petiole_r}" mass="{m_pet:.6g}" {_plant_geom(P.rgba)}/>{inner}</body>')
+    leaf = f'<body name="{p}leaf" pos="{_f(S)}" quat="{_f(_quat(R))}"><freejoint name="{p}leaf"/>{pet}</body>'
     # No relpose: the weld holds the leaf where it was built (MuJoCo uses the qpos0 pose).
     eq = (f'<weld name="{p}petiole" body1="{stem}" body2="{p}leaf" solref="{_f(WELD_SOLREF)}" '
           f'solimp="{_f(WELD_SOLIMP)}"/>')
@@ -262,19 +292,24 @@ def leaf_xml(p, S, a, params=None, stem_pos=None, stem_r=STEM_R, stem="stem"):
                                 base=np.asarray(S, float) + a * r_s)
 
 
-def plant_xml(S, a, leaf_len=LEAF_LEN):
-    """Step 1: the stem through S and one leaf. S: point on the stem axis where the petiole axis meets it.
-    a: petiole direction, away from the stem."""
+def plant_xml(S, a, leaf_len=LEAF_LEN, params=None, stem_r=STEM_R):
+    """Steps 1 and 3: the stem through S and one leaf. S: point on the stem axis where the petiole axis meets
+    it. a: petiole direction, away from the stem. params: the leaf's LeafParams (default: step 1's leaf)."""
     stem_pos = np.array([S[0], S[1], 0.5 * (STEM_Z[0] + STEM_Z[1])])
-    leaf, stub, eq, where = leaf_xml("", S, a, LeafParams(length=leaf_len), stem_pos)
-    stem, _ = stem_xml(S[:2], inner=stub)
+    leaf, stub, eq, where = leaf_xml("", S, a, params or LeafParams(length=leaf_len), stem_pos, stem_r)
+    stem, _ = stem_xml(S[:2], stem_r=stem_r, inner=stub)
     return stem + leaf, eq, where
 
 
 class Cutter:
     """Watches the blade contacts after every mj_step and cuts the petiole when both edges press hard enough.
 
-    Per step it also keeps: squeeze (the weaker blade's edge force on the petiole), pad_squeeze (same for
+    With blades on both fingertip faces (scene.BLADE_FACES) each pair is watched on its own: a pair cuts when
+    both its edges press hard enough for a stroke, and the stub is measured from the pressing pair nearest the
+    stem. ⚠️ Both pairs press the same petiole, so they share the jaw's squeeze.
+
+    Per step it also keeps: squeeze (the weaker edge of the hardest-pressing pair), squeezes (per pair),
+    pad_squeeze (same for
     the finger pads), stem_force (any robot part pressing the stem) and weld_force (what the leaf pulls
     on the stem with), plus their peaks. ⚠️ It edits the model when it cuts (collision bits, the stub
     geom); reset() puts the model back.
@@ -286,7 +321,9 @@ class Cutter:
         geom = lambda n: mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, n)
         self.weld = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_EQUALITY, p + "petiole")
         self.petiole, self.stem, self.stub_geom = geom(p + "petiole"), geom(where.get("stem", "stem")), geom(p + "stub")
-        self.blades = (geom("arm/blade_fixed"), geom("arm/blade_moving"))
+        names_ = (("arm/blade_fixed", "arm/blade_moving"), ("arm/blade_fixed2", "arm/blade_moving2"))
+        self.pairs = [(geom(f), geom(mv)) for f, mv in names_ if geom(f) >= 0]
+        self.blades = tuple(g for pr in self.pairs for g in pr)
         self.leaf = m.body(p + "leaf").id
         self.gripper = m.body("arm/gripper").id
         root = m.body_rootid[m.geom_bodyid]
@@ -306,7 +343,9 @@ class Cutter:
         m.geom_size[self.stub_geom], m.geom_pos[self.stub_geom] = self.stub_size0, self.stub_pos0
         m.geom_group[self.stub_geom] = 5
         d.eq_active[self.weld] = 1
-        self.cut_t = self.stub = self.squeeze_at_cut = self._over_t = None
+        self.cut_t = self.stub = self.squeeze_at_cut = None
+        self._over_t = [None] * len(self.pairs)
+        self.squeezes = [0.0] * len(self.pairs)
         self.just_cut = False
         self.squeeze = self.pad_squeeze = self.stem_force = self.weld_force = 0.0
         self.peak = dict(squeeze=0.0, pad_squeeze=0.0, stem_force=0.0, weld_force=0.0)
@@ -319,7 +358,7 @@ class Cutter:
     def step(self):
         m, d = self.m, self.d
         axis = d.xmat[self.gripper].reshape(3, 3)[:, 0]          # the jaw closes along gripper x
-        edge, pad, stem = [0.0, 0.0], [0.0, 0.0], 0.0
+        edge, pad, stem = {b: 0.0 for b in self.blades}, [0.0, 0.0], 0.0
         for i in range(d.ncon):
             c = d.contact[i]
             g1, g2 = int(c.geom1), int(c.geom2)
@@ -336,10 +375,11 @@ class Cutter:
             elif other in self.blades:
                 self.blade_touch = True
                 if abs(c.frame[:3] @ axis) >= self.cos_edge:
-                    edge[self.blades.index(other)] += fn
+                    edge[other] += fn
             else:
                 pad[self.pads[other]] += fn
-        self.squeeze, self.pad_squeeze, self.stem_force = min(edge), min(pad), stem
+        self.squeezes = [min(edge[f], edge[mv]) for f, mv in self.pairs]
+        self.squeeze, self.pad_squeeze, self.stem_force = max(self.squeezes), min(pad), stem
         self.weld_force = 0.0
         if self.attached:
             rows = np.flatnonzero((d.efc_type[:d.nefc] == mujoco.mjtConstraint.mjCNSTR_EQUALITY)
@@ -348,18 +388,22 @@ class Cutter:
         for k in self.peak:
             self.peak[k] = max(self.peak[k], getattr(self, k))
         self.just_cut = False
-        if self.attached and self.squeeze >= self.cut_force:
-            self._over_t = d.time if self._over_t is None else self._over_t
-            if d.time - self._over_t >= CUT_DWELL_S - 1e-9:
+        for k, sq in enumerate(self.squeezes):
+            if not (self.attached and sq >= self.cut_force):
+                self._over_t[k] = None
+                continue
+            self._over_t[k] = d.time if self._over_t[k] is None else self._over_t[k]
+            if d.time - self._over_t[k] >= CUT_DWELL_S - 1e-9:
                 self._cut()
-        else:
-            self._over_t = None
+                break
 
     def _cut(self):
         m, d, w = self.m, self.d, self.where
         S, a = d.xpos[self.leaf], d.xmat[self.leaf].reshape(3, 3)[:, 0]
-        plane = np.mean([d.geom_xpos[b] for b in self.blades], axis=0)   # both blades share one plane
-        self.stub = float((plane - S) @ a - surface_dist(a, w["stem_r"]))
+        # the pair's two blades share one plane; the stub is the cut nearest the stem among the pairs pressing it
+        stubs = [float((np.mean([d.geom_xpos[f], d.geom_xpos[mv]], axis=0) - S) @ a - surface_dist(a, w["stem_r"]))
+                 for (f, mv), sq in zip(self.pairs, self.squeezes) if sq > 0]
+        self.stub = min(stubs)
         self.cut_t, self.squeeze_at_cut, self.just_cut = d.time, self.squeeze, True
         d.eq_active[self.weld] = 0
         m.geom_contype[self.leaf_geoms], m.geom_conaffinity[self.leaf_geoms] = FALLEN_BITS

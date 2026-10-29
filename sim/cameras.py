@@ -2,6 +2,7 @@
 
 Copied from B.L.U.S.H sim/cameras.py (commit e91ef0c): the renderers only. Camera placement is SHEAR's
 own, in layout.py. Changed: CAM_IN_MODEL names; sphere_box dropped (fruit boxes are B.L.U.S.H's job).
+Added (SHEAR step 4): depth(), for the keypoint labels' visibility test (labels.py).
 
     cams = SimCameras(m)                      # ⚠️ one per model AND per thread: a MuJoCo renderer is
     rgb = cams.rgb(d, "birdseye")             #    bound to the model and to the GL context's thread
@@ -27,6 +28,7 @@ class SimCameras:
         self.m = m
         self._r = {}
         self._seg = {}
+        self._depth = {}
 
     def _renderer(self, lens):
         key = (lens.pin_h, lens.pin_w)
@@ -66,6 +68,32 @@ class SimCameras:
         # ⚠️ nearest, not linear: blending two ids gives a third, unrelated id.
         return lens.distort(geom, nearest=True).astype(np.int32) - 1
 
+    def depth(self, d, cam):
+        """Per pixel: depth (m) along the camera's view axis, through the lens; 0 where nothing was drawn.
+        Own renderer, like ids(): the depth buffer of the MSAA one would blend at edges too."""
+        lens = LENSES[cam]
+        key = (lens.pin_h, lens.pin_w)
+        if key not in self._depth:
+            keep = int(self.m.vis.quality.offsamples)
+            self.m.vis.quality.offsamples = 0
+            try:
+                self._depth[key] = mujoco.Renderer(self.m, lens.pin_h, lens.pin_w)
+            finally:
+                self.m.vis.quality.offsamples = keep
+            self._depth[key].enable_depth_rendering()
+        r = self._depth[key]
+        r.update_scene(d, camera=CAM_IN_MODEL[cam])
+        z = r.render().astype(np.float32)
+        z[z >= self.m.stat.extent * self.m.vis.map.zfar * 0.99] = 0.0       # the far plane: nothing there
+        # ⚠️ nearest, not linear: blending a near and a far surface makes a depth where nothing is.
+        return lens.distort(z, nearest=True)
+
+    def cam_depth(self, d, cam, pts_world):
+        """World points -> their depth along this camera's view axis (m), as depth() reports it."""
+        cid = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_CAMERA, CAM_IN_MODEL[cam])
+        R = d.cam_xmat[cid].reshape(3, 3)
+        return -((np.atleast_2d(pts_world) - d.cam_xpos[cid]) @ R)[:, 2]
+
     def true_box(self, d, cam, geom_id, ids=None):
         """(x0, y0, x1, y1) around a geom's visible pixels and its pixel count, or (None, 0) if hidden."""
         import cv2
@@ -92,6 +120,6 @@ class SimCameras:
         return LENSES[cam].project(np.c_[c[:, 0], -c[:, 1], -c[:, 2]])
 
     def close(self):
-        for r in (*self._r.values(), *self._seg.values()):
+        for r in (*self._r.values(), *self._seg.values(), *self._depth.values()):
             r.close()
-        self._r, self._seg = {}, {}
+        self._r, self._seg, self._depth = {}, {}, {}
