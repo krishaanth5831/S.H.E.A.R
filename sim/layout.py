@@ -123,11 +123,7 @@ def build(seeds=(11, 12, 13), arm=True, profile=sg.DEFAULT_PROFILE, leaf_scale=1
         cam.alt.xyaxes = CLAW_XYAXES
         frame = world.worldbody.add_frame(pos=base, quat=(np.cos(arm_yaw / 2), 0, 0, np.sin(arm_yaw / 2)))
         world.attach(s, frame=frame, prefix="arm/")
-        # ⚠️ Same blade pair as scene.build: parent/child bodies skip contacts without it.
-        p = world.add_pair(geomname1="arm/blade_fixed", geomname2="arm/blade_moving")
-        p.condim = 3
-        p.solref, p.solimp = pl.CONTACT_SOLREF, pl.CONTACT_SOLIMP
-        p.friction = (0.3, 0.3, 0.005, 0.0001, 0.0001)
+        sc.add_blade_pairs(world)          # ⚠️ parent/child bodies skip contacts without the pairs
     m = world.compile()
     # The offscreen buffer must fit the pinhole renders, not just 640x480 (lens.py).
     m.vis.global_.offwidth, m.vis.global_.offheight = pinhole_size()

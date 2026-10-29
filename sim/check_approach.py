@@ -4,7 +4,6 @@
   python check_approach.py                 PASS/FAIL checks + one line of numbers per case, exit 1 on a FAIL
   python check_approach.py --windowed --case az=120,el=30     watch one case (it loops)
   python check_approach.py --reach         the reach survey on the greenhouse's dwarf plants (kinematic, ~6 min)
-  python check_approach.py --reach --free-roll    the same, as if the wrist rolled a full turn (a what-if)
 
 Each case is step 1 with the arm moved: cutpose.CutIK puts the blades on one dwarf-size leaf, the arm
 settles there on its servos (jaw open), the stem and leaf are built around where the blades really ended up,
@@ -109,8 +108,9 @@ def case_pose(c):
         return a, None
     if c["psi"]:
         f = _rot(cp.level(a) if c["mode"] == "flush" else a, c["psi"]) @ sols[0].fingers
+        face = sols[0].face
         sols = rig_ik().solve(S, a, STEM_R, off, r, mode=c["mode"], fingers=f, x0=sols[0].q)
-        sols = sorted(sols, key=lambda p: -p.fingers @ f)
+        sols = sorted((p for p in sols if p.face == face), key=lambda p: -p.fingers @ f)     # same blade pair
         if not sols:
             return a, None
     return a, sols[0]
@@ -135,7 +135,7 @@ def build_case(c, torque=sc.GRIPPER_TORQUE):
     params = dataclasses.replace(LEAF, petiole_r=c["r"] / 1000)
     m, d, info = sc.build(offset=c["offset"] / 1000, shift=c["shift"] / 1000, gripper_torque=torque, pose=pose.q,
                           a=a, params=params, stem_r=STEM_R, clearance=c["gap"] / 1000, cut=c["mode"],
-                          jaw_open_deg=c["jaw"])
+                          jaw_open_deg=c["jaw"], face=pose.face)
     info.update(a=a, pose=pose, petiole_r=c["r"] / 1000)
     return m, d, info
 
@@ -165,7 +165,7 @@ def run_case(c, torque=sc.GRIPPER_TORQUE):
     m, d, info = built
     cut_force = pl.cut_force_for(info["petiole_r"])
     cutter = pl.Cutter(m, d, info, cut_force)
-    a, n = info["a"], info["gmat"][:, 1]
+    a, n = info["a"], info["face"] * info["gmat"][:, 1]
     nl = cp.level(n)
     out = dict(reach=True, tilt=float(np.degrees(np.arccos(np.clip(n @ a, -1, 1)))),
                lean=float(np.degrees(np.arcsin(np.clip(n[2], -1, 1)))),
@@ -187,7 +187,7 @@ def run_case(c, torque=sc.GRIPPER_TORQUE):
         return out
     out["blocked"] = False
     jaw, G = m.actuator("arm/gripper").id, m.body("arm/gripper").id
-    blades = [m.geom("arm/blade_fixed").id, m.geom("arm/blade_moving").id]
+    blades = [m.geom("arm/" + b).id for b in sc.BLADE_PAIRS[info["face"]]]     # the pair next to the stem
     n_steps = round((SETTLE_S + CLOSE_S + HOLD_S) / m.opt.timestep)
     tail, at_cut = [], None
     for k in range(n_steps):
@@ -293,10 +293,16 @@ def run_checks(table):
            f"fingers pitched {min(ok_pitch):+.0f}..{max(ok_pitch):+.0f} deg off level still cut clean"
            + (f"; {', '.join(f'{p:+.0f}' for p in bad_pitch)} deg don't (the finger runs along the stem)" if bad_pitch else ""))
 
-    offs = [(o, r) for r in (1.2, 1.5, 1.8) for o in (2.0, 4.0, 8.0)]
+    offs = [(o, r) for r in (1.2, 1.5, 1.8) for o in (2.0, 4.0)]
     bad = [(o, r) for o, r in offs if not clean(get(offset=o, r=r), o / 1000)]
-    report(not bad, f"flush stubs of 2 / 4 / 8 mm on 2.4-3.6 mm petioles: the stub follows the offset, stem untouched"
+    report(not bad, f"flush stubs of 2 / 4 mm on 2.4-3.6 mm petioles: the stub follows the offset, stem untouched"
            + (f" (fails: {bad})" if bad else ""))
+    eight = [get(offset=8.0, r=r) for r in (1.2, 1.5, 1.8)]
+    print(f"INFO an 8 mm stub on 2.4 / 3.0 / 3.6 mm petioles: {', '.join(verdict(r) for r in eight)}. Out there the "
+          f"petiole bends away, and with two blade pairs sharing the squeeze a thick one may not part")
+    print(f"INFO the {sc.BLADE_FACES} blade pairs share the jaw's squeeze (steady force per pair: check_cut.py). The "
+          f"placeholder cut force is {pl.cut_force_for(0.0012):.1f}-{pl.cut_force_for(0.0018):.1f} N for 2.4-3.6 mm "
+          f"petioles (unverified)")
     one = [get(offset=1.0, r=r) for r in (1.2, 1.5, 1.8)]
     print(f"INFO a 1 mm stub: {', '.join(verdict(r) + f' / stem {r['stem_peak']:.0f} N' for r in one)}"
           f" -> 2 mm is the closest clean flush cut with the stock fingertips")
@@ -313,8 +319,11 @@ def run_checks(table):
         r0 = rr[1]
         blade = (f"lean {r0['lean']:+3.0f} twist {r0['twist']:3.0f}" if r0["reach"] else "no IK")
         print(f"     az {az:4d}: {blade}  ->  {' | '.join(verdict(r) for r in rr)}")
-    print("     Right-pointing leaves need the wrist rolled ~183 deg, past the follower's calibrated 165 (cutpose.py):"
-          "\n     the jaw can't flip over, so the blade leans 20 deg into the stem.")
+    if sc.BLADE_FACES == 1:
+        print("     Right-pointing leaves need the wrist rolled ~183 deg, past its physical stop at ~165:"
+              "\n     the jaw can't flip over, so the blade leans 20 deg into the stem.")
+    else:
+        print("     Blades on both fingertip faces: a right-pointing leaf is cut by the other pair, no wrist flip.")
     print(f"\n{'ALL PASS' if not fails else f'{fails} FAIL'}")
     return fails
 
@@ -379,14 +388,13 @@ def main():
     ap.add_argument("--case", default="", help="e.g. az=120,el=30 or psi=30 or offset=1,r=1.2 (see the docstring)")
     ap.add_argument("--table", action="store_true", help="also print one line per case")
     ap.add_argument("--reach", action="store_true", help="reach survey on the greenhouse plants (kinematic)")
-    ap.add_argument("--free-roll", action="store_true", help="--reach what-if: the wrist rolls a full turn")
     a = ap.parse_args()
     if a.windowed:
         windowed(parse_case(a.case))
         return 0
     if a.reach:
         import reach
-        return reach.survey(a.free_roll)
+        return reach.survey()
     return 1 if run_checks(a.table) else 0
 
 

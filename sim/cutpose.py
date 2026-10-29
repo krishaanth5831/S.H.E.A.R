@@ -7,8 +7,9 @@
 S: the point on the stem axis where the petiole axis meets it, a: the petiole's direction away from the stem
 (both in stemgen's `where[i]`). The stem is vertical (the sim's stems are).
 
-The blades sit as in step 1 (scene.build): the jaw hinge (gripper +y) is the blade plane's normal and points
-away from the stem, so the blades (on the fingertips' -y side) face the stem. The petiole axis passes just above
+The blades sit as in step 1 (scene.build), on both faces of the fingertips (scene.BLADE_FACES): the pair next to
+the stem cuts, so the jaw hinge (gripper +y) points away from the stem for the -y pair (face +1) and toward it
+for the +y pair (face -1). solve() tries both. The petiole axis passes just above
 the fixed edge, at the blades' centre along the fingers. Two ways to hold the blade (`mode`):
 
 - **"flush"** (default): the blade plane parallel to the stem, `offset` off its surface. That's the grower's
@@ -76,15 +77,16 @@ class CutPose:
     fingers: np.ndarray     # world direction the fingers point (gripper -z)
     R: np.ndarray           # gripper rotation (world)
     mode: str
+    face: int = 1           # which blade pair is next to the stem (scene.BLADE_PAIRS)
 
     def q_dict(self):
         return dict(zip(ARM5, map(float, self.q)))
 
 
-def tool_point(petiole_r, clearance=APPROACH_CLEARANCE):
+def tool_point(petiole_r, clearance=APPROACH_CLEARANCE, face=1):
     """Gripper-frame point the petiole axis passes through at the cut: scene.build's B_g."""
     jg = sc.jaw_geometry()
-    return np.array([jg["x_meet"] + petiole_r + clearance, jg["y_blade"], jg["z_blade"]])
+    return np.array([jg["x_meet"] + petiole_r + clearance, sc.blade_y(face), jg["z_blade"]])
 
 
 def level(v):
@@ -131,7 +133,7 @@ class CutIK:
         o, R = self.fk(x)
         d = o + R @ g["tool"] - g["S"]
         along = d @ g["a"]
-        n = R[:, 1]
+        n = g["face"] * R[:, 1]                  # blade plane normal, away from the stem
         if g["mode"] == "flush":
             r = np.r_[d - along * g["a"], d @ n - g["dist"], W_LEAN * n[2], W_LEVEL * R[2, 2], W_DIR * (n - g["a_lvl"])]
         else:
@@ -166,7 +168,7 @@ class CutIK:
         o, R = self.fk(x)
         d = o + R @ g["tool"] - g["S"]
         along = d @ g["a"]
-        n = R[:, 1]
+        n = g["face"] * R[:, 1]
         miss = np.linalg.norm(d - along * g["a"])
         miss += abs((d @ n if g["mode"] == "flush" else along) - g["dist"])
         nl = np.array([n[0], n[1], 0.0])
@@ -174,7 +176,7 @@ class CutIK:
         return CutPose(q=np.asarray(x, float), pos_err=float(miss), lean_deg=float(np.degrees(np.arcsin(np.clip(n[2], -1, 1)))),
                        pitch_deg=float(np.degrees(np.arcsin(np.clip(-R[2, 2], -1, 1)))),
                        twist_deg=float(twist), tilt_deg=float(np.degrees(np.arccos(np.clip(n @ g["a"], -1, 1)))),
-                       fingers=-R[:, 2], R=R, mode=g["mode"])
+                       fingers=-R[:, 2], R=R, mode=g["mode"], face=g["face"])
 
     def solve(self, S, a, stem_r, offset=0.002, petiole_r=pl.PETIOLE_R, mode="flush", clearance=APPROACH_CLEARANCE,
               x0=None, fingers=None):
@@ -186,29 +188,33 @@ class CutIK:
         a = np.asarray(a, float) / np.linalg.norm(a)
         S = np.asarray(S, float)
         dist = stem_r + offset if mode == "flush" else pl.surface_dist(a, stem_r) + offset
-        g = dict(mode=mode, S=S, a=a, a_lvl=level(a), dist=dist, tool=tool_point(petiole_r, clearance),
-                 f=None if fingers is None else np.asarray(fingers, float) / np.linalg.norm(fingers))
-        T = S + a * (pl.surface_dist(a, stem_r) + offset)          # rough cut point, for the warm starts
-        hinge = g["a_lvl"] if mode == "flush" else a
-        tips = self.P + np.einsum("nij,j->ni", self.R, g["tool"])
-        cost = np.linalg.norm(tips - T, axis=1) + W_DIR * np.linalg.norm(self.R[:, :, 1] - hinge, axis=1)
-        if g["f"] is not None:
-            cost += W_FINGERS * np.linalg.norm(-self.R[:, :, 2] - g["f"], axis=1)
-        starts = ([np.asarray(x0, float)] if x0 is not None else []) + [self.Q[i] for i in np.argsort(cost)[:STARTS]]
-        out = []
         rad = np.radians
         key = ((lambda p: W_LEAN * abs(rad(p.lean_deg)) + W_LEVEL * abs(rad(p.pitch_deg)) + W_DIR * rad(p.twist_deg))
                if mode == "flush" else (lambda p: p.tilt_deg))
-        for x in starts:
-            p = self.pose(self._lm(x.copy(), g), g)
-            # ⚠️ The petiole's axis is a whole line: the flush residual is also met with the cut point on its
-            # far side, through the stem, with the hinge (and the blades) facing away from the stem. Never a cut.
-            if p.pos_err > POS_OK or p.R[:, 1] @ (a if mode == "square" else g["a_lvl"]) <= 0:
-                continue
-            same = [k for k, o in enumerate(out)
-                    if np.degrees(np.arccos(np.clip(o.fingers @ p.fingers, -1, 1))) < SAME_POSE_DEG]
-            if not same:
-                out.append(p)
-            elif key(p) < key(out[same[0]]):
-                out[same[0]] = p
+        out = []
+        f = None if fingers is None else np.asarray(fingers, float) / np.linalg.norm(fingers)
+        for face in list(sc.BLADE_PAIRS)[:sc.BLADE_FACES]:      # each blade pair, as the one next to the stem
+            g = dict(mode=mode, S=S, a=a, a_lvl=level(a), dist=dist, tool=tool_point(petiole_r, clearance, face),
+                     f=f, face=face)
+            T = S + a * (pl.surface_dist(a, stem_r) + offset)          # rough cut point, for the warm starts
+            hinge = face * (g["a_lvl"] if mode == "flush" else a)
+            tips = self.P + np.einsum("nij,j->ni", self.R, g["tool"])
+            cost = np.linalg.norm(tips - T, axis=1) + W_DIR * np.linalg.norm(self.R[:, :, 1] - hinge, axis=1)
+            if f is not None:
+                cost += W_FINGERS * np.linalg.norm(-self.R[:, :, 2] - f, axis=1)
+            starts = ([np.asarray(x0, float)] if x0 is not None else []) + [self.Q[i] for i in np.argsort(cost)[:STARTS]]
+            mine = []
+            for x in starts:
+                p = self.pose(self._lm(x.copy(), g), g)
+                # ⚠️ The petiole's axis is a whole line: the flush residual is also met with the cut point on its
+                # far side, through the stem, with the blades facing away from the stem. Never a cut.
+                if p.pos_err > POS_OK or face * p.R[:, 1] @ (a if mode == "square" else g["a_lvl"]) <= 0:
+                    continue
+                same = [k for k, o in enumerate(mine)
+                        if np.degrees(np.arccos(np.clip(o.fingers @ p.fingers, -1, 1))) < SAME_POSE_DEG]
+                if not same:
+                    mine.append(p)
+                elif key(p) < key(mine[same[0]]):
+                    mine[same[0]] = p
+            out += mine
         return sorted(out, key=key)

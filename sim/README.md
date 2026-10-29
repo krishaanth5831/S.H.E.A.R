@@ -38,6 +38,8 @@ The checks cover these cases:
 They also print what matters for the real gripper: the blade force the stock SO-101 jaw reaches on a
 7 mm petiole. That is a sim estimate from the 12 V servo's stall torque: about 17 N at 50 % torque, and
 7.5 N once the stalled servo drops to 25 %. Both are upper bounds, because the real PSU sags under load.
+⚠️ Since 2026-10-29 the fingertips carry a blade pair on both faces (`scene.BLADE_FACES`). Both pairs press the
+petiole at once and share the squeeze: 8.8 N per pair at 50 % torque, 3.9 N at 25 %.
 
 All plant sizes and the cut force are guesses marked `unverified` in the code, until measured on real
 plants.
@@ -115,7 +117,6 @@ The checks cover these cases:
     python check_approach.py                     PASS/FAIL checks, about 20 s (--table: one line per case)
     python check_approach.py --windowed --case az=-60,el=45      watch one case (keys in the docstring)
     python check_approach.py --reach             reach survey on the greenhouse plants, kinematic, ~6 min
-    python check_approach.py --reach --free-roll the same as if the wrist rolled a full turn (a what-if)
 
 - `cutpose.py`: the cut pose and the 5-joint IK that reaches it. The default cut is **flush**: the blade plane
   parallel to the stem, 2 mm off it, the way growers cut ("tot tegen de stam"). The jaw then closes along the
@@ -141,25 +142,22 @@ What it found (2026-10-29):
   - blade lean < 5 deg. This is not an artifact of the 25 deg jaw opening: at 0-25 deg openings, 10-20 deg of
     lean still puts the moving pad into the stem, and 5 deg cuts only at a 4 mm stub with the jaw open 5 deg or
     less (`--case mode=square,el=5,offset=4,jaw=5`). Step 5 should come in with the jaw barely open.
-- ⚠️ **The SO-101's 5 joints decide which leaves it can cut.** Its fingers stay in the pan plane and its wrist
-  roll stops at ±165 deg (follower calibration). So a flush cut fits a petiole pointing along the row to the
-  arm's left (±30 deg). Leaves pointing right need the jaw flipped (roll ~183 deg), and the blade then leans 20
-  deg into the stem. Leaves pointing at or away from the arm need fingers straight up or down, which the arm
-  can't reach in the work band.
-- **Reach on the dwarf row** (kinematic, fruit may be pushed 15 mm, stalks may not):
-  - one base: 9 % of leaves, 13 % of the rule's cuts
-  - base sliding ±15 cm along the aisle: 31 % / 29 %
-  - sliding, plus the far side of the row: 58 % / 58 %
+- ⚠️ **The SO-101's 5 joints decide which leaves it can cut.** Its fingers stay in the pan plane, so a flush cut
+  fits a petiole that points along the row, within ±30 deg. Leaves pointing at or away from the arm would need
+  the fingers straight up or down, which the arm can't reach in the work band.
+- **Blades on both fingertip faces** (K7 2026-10-29). With one pair, a leaf pointing to the arm's right needed the
+  jaw flipped over (wrist roll ~183 deg). The wrist has physical stops at ~±165 deg, so that leaf couldn't be cut
+  flush. Now the other pair cuts it, with no flip. The cost is that both pairs share the squeeze (step 1 above).
+  An 8 mm stub on a 3.6 mm petiole then doesn't part; 2-4 mm stubs do.
+- **Reach on the dwarf row** (kinematic, both blade pairs, fruit may be pushed 15 mm, stalks may not):
 
-  Lean (the roll limit) is the biggest blocker, then twist, then truss stalks.
-- What-if, the wrist rolling a full turn (`--free-roll`). ⚠️ The real wrist has physical stops at ~±165 deg (K7,
-  2026-10-29), so this can't come from recalibrating; blades on both fingertip faces are the hardware route:
-  - one base: 12 % / 16 %
-  - sliding: 48 % / 55 %
-  - sliding plus the far side: 66 % / 71 %
+  | where the base is | leaves | rule's cuts | one blade pair, for comparison |
+  |---|---|---|---|
+  | one base | 16 % | 16 % | 9 % / 13 % |
+  | base sliding ±15 cm along the aisle | 53 % | 65 % | 31 % / 29 % |
+  | sliding, plus the far side of the row | 66 % | 71 % | 58 % / 58 % |
 
-  Then twist (petioles pointing at or away from the arm) and truss stalks are what's left. On one base the
-  roll buys little; with a sliding base it nearly doubles the rule cuts.
+  What's left: twist (petioles pointing at or away from the arm), then truss stalks in the way.
 - The rig's leaflets pass through the hand: it tests the cut, not the approach. Approach paths, servo sag and
   the real leaf pushing are step 5's (the scripted cutter).
 

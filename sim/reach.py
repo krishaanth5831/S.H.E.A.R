@@ -76,17 +76,12 @@ def classify(p):
 _IK = {}
 
 
-FREE_ROLL = False          # survey(free_roll=True): what-if the wrist rolled a full turn (see survey())
-
-
 def survey_base(seed, arm_xy, arm_yaw, frame=True):
     """Per present leaf on p0: (node, rule cuts it?, verdict, pose)."""
     m, d, info = lo.build((seed,) + NEIGHBOUR_SEEDS, arm_xy=arm_xy, arm_yaw=arm_yaw)
     key = (tuple(arm_xy), arm_yaw)
     if key not in _IK:                     # the IK doesn't depend on the plant: one per base pose
         _IK[key] = cp.CutIK(base=np.array([*arm_xy, 0.0]), yaw=arm_yaw)
-        if FREE_ROLL:
-            _IK[key].lo[4], _IK[key].hi[4] = -1.2 * np.pi, 1.2 * np.pi
     ik = _IK[key]
     spec = info["specs"][0]
     cuts = set(sg.label(spec).cuts)
@@ -123,15 +118,7 @@ def survey_base(seed, arm_xy, arm_yaw, frame=True):
     return out
 
 
-def survey(free_roll=False):
-    """free_roll: a what-if. The follower's wrist roll stops at +-165 deg (its calibration), so the jaw can't flip
-    over for a petiole pointing to the arm's right. A wrist that rolls a full turn, or blades on both faces of
-    the fingertips, would lift that limit; this shows how much it buys. Not the real arm."""
-    global FREE_ROLL
-    FREE_ROLL = free_roll
-    _IK.clear()
-    if free_roll:
-        print("⚠️ WHAT-IF: wrist roll unlimited (not the real follower)")
+def survey():
     fails = 0
     yaw_far = -np.pi / 2
     far_y = lo.ROW_Y + (lo.ROW_Y - lo.AISLE_Y)          # mirror of the aisle across the row

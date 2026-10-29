@@ -304,7 +304,12 @@ def plant_xml(S, a, leaf_len=LEAF_LEN, params=None, stem_r=STEM_R):
 class Cutter:
     """Watches the blade contacts after every mj_step and cuts the petiole when both edges press hard enough.
 
-    Per step it also keeps: squeeze (the weaker blade's edge force on the petiole), pad_squeeze (same for
+    With blades on both fingertip faces (scene.BLADE_FACES) each pair is watched on its own: a pair cuts when
+    both its edges press hard enough for a stroke, and the stub is measured from the pressing pair nearest the
+    stem. ⚠️ Both pairs press the same petiole, so they share the jaw's squeeze.
+
+    Per step it also keeps: squeeze (the weaker edge of the hardest-pressing pair), squeezes (per pair),
+    pad_squeeze (same for
     the finger pads), stem_force (any robot part pressing the stem) and weld_force (what the leaf pulls
     on the stem with), plus their peaks. ⚠️ It edits the model when it cuts (collision bits, the stub
     geom); reset() puts the model back.
@@ -316,7 +321,9 @@ class Cutter:
         geom = lambda n: mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, n)
         self.weld = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_EQUALITY, p + "petiole")
         self.petiole, self.stem, self.stub_geom = geom(p + "petiole"), geom(where.get("stem", "stem")), geom(p + "stub")
-        self.blades = (geom("arm/blade_fixed"), geom("arm/blade_moving"))
+        names_ = (("arm/blade_fixed", "arm/blade_moving"), ("arm/blade_fixed2", "arm/blade_moving2"))
+        self.pairs = [(geom(f), geom(mv)) for f, mv in names_ if geom(f) >= 0]
+        self.blades = tuple(g for pr in self.pairs for g in pr)
         self.leaf = m.body(p + "leaf").id
         self.gripper = m.body("arm/gripper").id
         root = m.body_rootid[m.geom_bodyid]
@@ -336,7 +343,9 @@ class Cutter:
         m.geom_size[self.stub_geom], m.geom_pos[self.stub_geom] = self.stub_size0, self.stub_pos0
         m.geom_group[self.stub_geom] = 5
         d.eq_active[self.weld] = 1
-        self.cut_t = self.stub = self.squeeze_at_cut = self._over_t = None
+        self.cut_t = self.stub = self.squeeze_at_cut = None
+        self._over_t = [None] * len(self.pairs)
+        self.squeezes = [0.0] * len(self.pairs)
         self.just_cut = False
         self.squeeze = self.pad_squeeze = self.stem_force = self.weld_force = 0.0
         self.peak = dict(squeeze=0.0, pad_squeeze=0.0, stem_force=0.0, weld_force=0.0)
@@ -349,7 +358,7 @@ class Cutter:
     def step(self):
         m, d = self.m, self.d
         axis = d.xmat[self.gripper].reshape(3, 3)[:, 0]          # the jaw closes along gripper x
-        edge, pad, stem = [0.0, 0.0], [0.0, 0.0], 0.0
+        edge, pad, stem = {b: 0.0 for b in self.blades}, [0.0, 0.0], 0.0
         for i in range(d.ncon):
             c = d.contact[i]
             g1, g2 = int(c.geom1), int(c.geom2)
@@ -366,10 +375,11 @@ class Cutter:
             elif other in self.blades:
                 self.blade_touch = True
                 if abs(c.frame[:3] @ axis) >= self.cos_edge:
-                    edge[self.blades.index(other)] += fn
+                    edge[other] += fn
             else:
                 pad[self.pads[other]] += fn
-        self.squeeze, self.pad_squeeze, self.stem_force = min(edge), min(pad), stem
+        self.squeezes = [min(edge[f], edge[mv]) for f, mv in self.pairs]
+        self.squeeze, self.pad_squeeze, self.stem_force = max(self.squeezes), min(pad), stem
         self.weld_force = 0.0
         if self.attached:
             rows = np.flatnonzero((d.efc_type[:d.nefc] == mujoco.mjtConstraint.mjCNSTR_EQUALITY)
@@ -378,18 +388,22 @@ class Cutter:
         for k in self.peak:
             self.peak[k] = max(self.peak[k], getattr(self, k))
         self.just_cut = False
-        if self.attached and self.squeeze >= self.cut_force:
-            self._over_t = d.time if self._over_t is None else self._over_t
-            if d.time - self._over_t >= CUT_DWELL_S - 1e-9:
+        for k, sq in enumerate(self.squeezes):
+            if not (self.attached and sq >= self.cut_force):
+                self._over_t[k] = None
+                continue
+            self._over_t[k] = d.time if self._over_t[k] is None else self._over_t[k]
+            if d.time - self._over_t[k] >= CUT_DWELL_S - 1e-9:
                 self._cut()
-        else:
-            self._over_t = None
+                break
 
     def _cut(self):
         m, d, w = self.m, self.d, self.where
         S, a = d.xpos[self.leaf], d.xmat[self.leaf].reshape(3, 3)[:, 0]
-        plane = np.mean([d.geom_xpos[b] for b in self.blades], axis=0)   # both blades share one plane
-        self.stub = float((plane - S) @ a - surface_dist(a, w["stem_r"]))
+        # the pair's two blades share one plane; the stub is the cut nearest the stem among the pairs pressing it
+        stubs = [float((np.mean([d.geom_xpos[f], d.geom_xpos[mv]], axis=0) - S) @ a - surface_dist(a, w["stem_r"]))
+                 for (f, mv), sq in zip(self.pairs, self.squeezes) if sq > 0]
+        self.stub = min(stubs)
         self.cut_t, self.squeeze_at_cut, self.just_cut = d.time, self.squeeze, True
         d.eq_active[self.weld] = 0
         m.geom_contype[self.leaf_geoms], m.geom_conaffinity[self.leaf_geoms] = FALLEN_BITS
