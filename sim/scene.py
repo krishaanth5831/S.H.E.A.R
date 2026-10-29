@@ -5,8 +5,9 @@ and one leaf whose petiole crosses the blades.
     m, d, info = build(offset=0.008)     8 mm off
     m, d, info = build(shift=0.0085)     the petiole sits 8.5 mm deeper in the jaw, behind the blades
 
-No IK yet. The arm holds one fixed pose (ARM_POSE): a first pass settles it there and reads where the
-blades ended up, and the second pass builds the stem and the leaf around them. Step 3 moves the arm.
+The arm holds one pose: step 1's ARM_POSE, or (step 3, check_approach.py) a cut pose from cutpose.CutIK. A first
+pass settles it there and reads where the blades ended up, and the second pass builds the stem and the leaf
+around them.
 
 ⚠️ The arm model needs the SO-ARM100 files: run ./fetch_so101.sh once (sim/assets/so101 is gitignored).
 """
@@ -220,16 +221,20 @@ def _pose_arm(m, d, q):
 
 
 @functools.lru_cache(maxsize=None)
-def settled_arm():
-    """The arm at ARM_POSE with the jaw open and the hinge levelled, settled on its servos (no plant).
-    Returns joint values by name and the gripper body's world position and rotation."""
+def settled_arm(pose=None, jaw_open_deg=JAW_OPEN_DEG):
+    """The arm settled on its servos with the jaw open (no plant). Returns joint values by name and the
+    gripper body's world position and rotation.
+
+    pose None: step 1's ARM_POSE, with the wrist rolled until the jaw hinge is level. pose = 5 joint values
+    (a tuple, from cutpose.CutIK): held as given, so the plant can be built around where the blades really
+    end up after the servos sag (step 3)."""
     world = mujoco.MjSpec.from_string(world_xml())
     world.attach(arm_spec(), frame=world.worldbody.add_frame(), prefix="arm/")
     m = world.compile()
     d = mujoco.MjData(m)
     gb = m.body("arm/gripper").id
-    target = dict(zip(ARM_JOINTS, ARM_POSE)) | {"gripper": np.radians(JAW_OPEN_DEG)}
-    for k in range(2):          # settle, level the hinge with the wrist roll, settle again
+    target = dict(zip(ARM_JOINTS, ARM_POSE if pose is None else pose)) | {"gripper": np.radians(jaw_open_deg)}
+    for k in range(2 if pose is None else 1):     # settle, level the hinge with the wrist roll, settle again
         if k:
             target["wrist_roll"] += np.arctan2(R[2, 1], R[2, 0])    # turns gripper y's lean into gripper x
         _pose_arm(m, d, target)
@@ -240,17 +245,34 @@ def settled_arm():
     return q, d.xpos[gb].copy(), d.xmat[gb].reshape(3, 3).copy()
 
 
-def build(offset=0.002, shift=0.0, gripper_torque=GRIPPER_TORQUE, leaf_len=pl.LEAF_LEN):
+def build(offset=0.002, shift=0.0, gripper_torque=GRIPPER_TORQUE, leaf_len=pl.LEAF_LEN, pose=None, a=None,
+          params=None, stem_r=pl.STEM_R, jaw_open_deg=JAW_OPEN_DEG, clearance=PETIOLE_CLEARANCE, cut="square"):
     """offset: blade plane to stem surface along the petiole, i.e. the stub a cut should leave.
-    shift: the plant moved along the fingers, + deeper into the jaw (toward the palm), - out past the tips."""
+    shift: the plant moved along the fingers, + deeper into the jaw (toward the palm), - out past the tips.
+
+    Step 3 (check_approach.py): pose = 5 joint values to hold the arm at (cutpose.CutIK), a = the petiole's
+    world direction (None: along the jaw hinge, step 1), params = the leaf's plant.LeafParams, stem_r = the
+    stem's radius. The stem stays vertical; with a off the hinge the petiole crosses the blades at a slant.
+    clearance: petiole above the fixed edge (the arm's sag / IK error shows up here on a real approach).
+    cut: "square" puts the stem `offset` from the blade plane along the petiole (step 1); "flush" puts it
+    `offset` from the blade plane square to the plane (cutpose.py's flush cut)."""
     jg = jaw_geometry()
-    q, gpos, gmat = settled_arm()
+    P = params or pl.LeafParams(length=leaf_len)
+    q, gpos, gmat = settled_arm(None if pose is None else tuple(float(v) for v in pose), jaw_open_deg)
     # The petiole rests just above the fixed edge, centred on the blades, and runs along the jaw hinge
     # (gripper +y) away from the stem, which stands on the blades' -y side.
-    B_g = np.array([jg["x_meet"] + pl.PETIOLE_R + PETIOLE_CLEARANCE, jg["y_blade"], jg["z_blade"] + shift])
-    B, a = gpos + gmat @ B_g, gmat[:, 1]
-    S = B - a * (offset + pl.surface_dist(a))
-    body, eq, where = pl.plant_xml(S, a, leaf_len)
+    a = gmat[:, 1] if a is None else np.asarray(a, float) / np.linalg.norm(a)
+    # ⚠️ A petiole crossing the 2 mm collision blade at a slant climbs toward the closing side inside it: lift
+    # it by that much, or the fixed blade starts out cut into it (0.6 mm at a 30 deg slant).
+    slant = BLADE_T_COL / 2 * abs(a @ gmat[:, 0]) / max(abs(a @ gmat[:, 1]), 1e-6)
+    B_g = np.array([jg["x_meet"] + P.petiole_r + clearance + slant, jg["y_blade"], jg["z_blade"] + shift])
+    B = gpos + gmat @ B_g
+    n = gmat[:, 1]
+    if cut == "flush":
+        S = B - a * (stem_r + offset) / (a @ n)       # S's distance to the blade plane, along its normal
+    else:
+        S = B - a * (offset + pl.surface_dist(a, stem_r))
+    body, eq, where = pl.plant_xml(S, a, params=P, stem_r=stem_r)
     world = mujoco.MjSpec.from_string(world_xml(body, eq))
     world.attach(arm_spec(gripper_torque), frame=world.worldbody.add_frame(), prefix="arm/")
     # ⚠️ The blades sit on a parent and a child body (gripper, moving jaw), and MuJoCo skips contacts
@@ -264,5 +286,5 @@ def build(offset=0.002, shift=0.0, gripper_torque=GRIPPER_TORQUE, leaf_len=pl.LE
     _pose_arm(m, d, q)
     mujoco.mj_forward(m, d)
     info = dict(where, B=B, offset=offset, shift=shift, jaw_open=q["gripper"], q0=d.qpos.copy(),
-                ctrl0=d.ctrl.copy(), jaw=jg)
+                ctrl0=d.ctrl.copy(), jaw=jg, gmat=gmat)
     return m, d, info

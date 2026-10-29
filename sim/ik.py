@@ -4,7 +4,7 @@
 
 Moves shoulder_pan, shoulder_lift, elbow_flex and wrist_flex, inside the model's joint ranges. The wrist
 roll and the jaw stay where they are. It works on a copy of d, so the scene isn't touched.
-Step 3 adds the jaw's orientation across the petiole; this is the position part.
+The jaw's orientation across the petiole is cutpose.py's (step 3); this is the position part.
 """
 import mujoco
 import numpy as np

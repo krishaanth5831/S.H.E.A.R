@@ -101,7 +101,7 @@ decides how many leaves come off, so ask growers before trusting the labels.
     enough for the whole row. Not over the arm's shoulder like B.L.U.S.H.
   - the claw camera on the SO-101's stock wrist mount
 - `lens.py`, `cameras.py`: the InnoMaker lens model and renderers, from B.L.U.S.H (camera hardware only).
-- `ik.py`: position IK for the fingertips, used for the ready pose. Step 3 adds the jaw's orientation.
+- `ik.py`: position IK for the fingertips, used for the ready pose. The jaw's orientation is `cutpose.py`'s (step 3).
 
 The checks cover these cases:
 - the birdseye sits on its mast and never sees it; it sees every leaf's cut point and every plant top to bottom
@@ -109,3 +109,83 @@ The checks cover these cases:
 - the claw camera looks along the jaw
 - the plants settle inside the greenhouse
 - IK reaches the ready pose
+
+## Step 3: the cut across the ways the arm meets a leaf
+
+    python check_approach.py                     PASS/FAIL checks, about 20 s (--table: one line per case)
+    python check_approach.py --windowed --case az=-60,el=45      watch one case (keys in the docstring)
+    python check_approach.py --reach             reach survey on the greenhouse plants, kinematic, ~6 min
+    python check_approach.py --reach --free-roll the same as if the wrist rolled a full turn (a what-if)
+
+- `cutpose.py`: the cut pose and the 5-joint IK that reaches it. The default cut is **flush**: the blade plane
+  parallel to the stem, 2 mm off it, the way growers cut ("tot tegen de stam"). The jaw then closes along the
+  stem, as in step 1: hinge level, fingers level. Twist (the blade turned about the stem, off the petiole's own
+  direction) only slants the cut face, so it is traded first.
+- `check_approach.py`: step 1's rig with the arm moved there by `cutpose.CutIK`. It covers leaf directions,
+  blade lean, finger pitch, stub length, petiole size, and aim and sag errors. The stem is dwarf-size, the petiole
+  now bends (`LeafParams.bend`), and the cut force scales with the petiole (`plant.cut_force_for`, unverified).
+- `reach.py`: for every leaf on 20 random dwarf plants, whether the arm finds a clean flush pose clear of the
+  stem, truss stalks, pot and frame. It tries today's base, the base slid along the aisle, and the far side of
+  the row.
+
+What it found (2026-10-29):
+- **Flush, not square.** A blade square to a petiole that rises 5-30 deg leans into the stem and can't cut a
+  2-6 mm stub (15/15 cases: the moving pad or the blade meets the stem). Flush cuts leave 2.0-2.3 mm at every
+  petiole angle.
+- **2 mm is the closest clean flush cut** with the stock fingertips. At 1 mm the jaw presses the stem with
+  ~38 N. 2, 4 and 8 mm stubs follow the offset on 2.4-3.6 mm petioles.
+- **Tolerances:**
+  - finger pitch -22..+10 deg (+52 puts the finger along the stem)
+  - ±2 mm along the blades
+  - up to 1 mm of sag above the fixed edge (at 2 mm the squeeze goes into bending the petiole)
+  - blade lean < 5 deg. This is not an artifact of the 25 deg jaw opening: at 0-25 deg openings, 10-20 deg of
+    lean still puts the moving pad into the stem, and 5 deg cuts only at a 4 mm stub with the jaw open 5 deg or
+    less (`--case mode=square,el=5,offset=4,jaw=5`). Step 5 should come in with the jaw barely open.
+- ⚠️ **The SO-101's 5 joints decide which leaves it can cut.** Its fingers stay in the pan plane and its wrist
+  roll stops at ±165 deg (follower calibration). So a flush cut fits a petiole pointing along the row to the
+  arm's left (±30 deg). Leaves pointing right need the jaw flipped (roll ~183 deg), and the blade then leans 20
+  deg into the stem. Leaves pointing at or away from the arm need fingers straight up or down, which the arm
+  can't reach in the work band.
+- **Reach on the dwarf row** (kinematic, fruit may be pushed 15 mm, stalks may not):
+  - one base: 9 % of leaves, 13 % of the rule's cuts
+  - base sliding ±15 cm along the aisle: 31 % / 29 %
+  - sliding, plus the far side of the row: 58 % / 58 %
+
+  Lean (the roll limit) is the biggest blocker, then twist, then truss stalks.
+- What-if, the wrist rolling a full turn (`--free-roll`). ⚠️ The real wrist has physical stops at ~±165 deg (K7,
+  2026-10-29), so this can't come from recalibrating; blades on both fingertip faces are the hardware route:
+  - one base: 12 % / 16 %
+  - sliding: 48 % / 55 %
+  - sliding plus the far side: 66 % / 71 %
+
+  Then twist (petioles pointing at or away from the arm) and truss stalks are what's left. On one base the
+  roll buys little; with a sliding base it nearly doubles the rule cuts.
+- The rig's leaflets pass through the hand: it tests the cut, not the approach. Approach paths, servo sag and
+  the real leaf pushing are step 5's (the scripted cutter).
+
+## Step 4 (started): cut-point labels for the vision model
+
+    python check_labels.py                       PASS/FAIL checks on four rows, ~10 s
+    python check_labels.py --picture out.png     birdseye frames with the labels drawn on
+    python check_labels.py --windowed            the row with every cut point marked by the rule's decision
+    python render_cutpoints.py --pilot 6         a PILOT set: 6 labelled frames into ~/.cache/shear_sim/cutpoints_pilot
+
+- `labels.py`: YOLO-pose labels. Each object has a box and two keypoints.
+
+  | class | keypoint 0 | keypoint 1 |
+  |---|---|---|
+  | leaf (green / yellow / diseased) | the cut point | 15 mm out along the petiole (its direction, for the IK) |
+  | truss (green / turning / ripe / harvested) | where the stalk leaves the stem | 15 mm along the stalk |
+  | scar | the scar | not labelled |
+  | stem | bottom | top |
+
+  That is what `rule/select_leaves.py` needs (the node kinds, leaf health, truss stage, bottom-up order) and
+  what `cutpose.py` needs.
+- Keypoint visibility comes from a depth render, not the segmentation alone. ⚠️ A cut point behind the stem
+  projects onto the stem's front; the segmentation calls it seen, but it's hidden.
+- **Finding:** the birdseye sees only about a quarter of the rule's cut points (7 of 27 in the pilot). The low
+  leaves are behind trusses or on the stem's far side, and parking the arm didn't change that. The birdseye can
+  find the leaves; the claw camera has to find most cut points.
+- Not done yet: claw-camera frames (from step 5's approach poses), domain randomisation, the dataset, training.
+  `render_cutpoints.py` is capped at 24 frames until K7 approves the pilot.
+
