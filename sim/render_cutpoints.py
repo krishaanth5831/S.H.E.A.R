@@ -6,7 +6,8 @@
 
 Each frame is a row of three random dwarf plants (layout.py), settled, seen by the birdseye through the lens
 model. Written per frame k: images/k.png, labels/k.txt (YOLO-pose rows, labels.py), truth/k.json (3D keypoints
-and the rule's decisions). Plus data.yaml for ultralytics and preview/k.png with the labels drawn on.
+and the rule's decisions). Plus data.yaml for ultralytics, and two previews: preview/k_leaves.png (each plant
+zoomed, leaves numbered, one legend line per leaf: the one to check) and preview/k_all.png (every label, crowded).
 
 ⚠️ A pilot only: at most PILOT_MAX frames, no training, nothing pushed (K7 approves the pilot and the dataset
 size first, SHEAR Index 2026-10-28: "no dataset yet"). No domain randomisation yet (light, colours, camera
@@ -60,14 +61,15 @@ def main():
         Image.fromarray(rgb).save(a.out / "images" / f"{k:05d}.png")
         (a.out / "labels" / f"{k:05d}.txt").write_text("\n".join(lb.yolo_lines(objs)) + "\n")
         (a.out / "truth" / f"{k:05d}.json").write_text(lb.truth_json(objs, info, "birdseye"))
-        Image.fromarray(cl.draw(rgb, objs)).save(a.out / "preview" / f"{k:05d}.png")
+        Image.fromarray(cl.draw_plants(rgb, objs)).save(a.out / "preview" / f"{k:05d}_leaves.png")
+        Image.fromarray(cl.draw(rgb, objs)).save(a.out / "preview" / f"{k:05d}_all.png")
         for o in objs:
             counts[o.cls] = counts.get(o.cls, 0) + 1
         cuts = [o for o in objs if o.decision == "cut"]
         print(f"frame {k}: seeds {seeds}, {len(objs)} objects, {len(cuts)} rule cuts "
               f"({sum(o.kpts[0, 2] == 2 for o in cuts)} cut points seen)", flush=True)
     print(f"\nwrote {a.pilot} frames to {a.out}: " + ", ".join(f"{c} {counts.get(c, 0)}" for c in lb.CLASSES))
-    print(f"look at {a.out / 'preview'} (labels drawn on, 2x)")
+    print(f"look at {a.out / 'preview'}: *_leaves.png per plant, *_all.png every label")
     return 0
 
 

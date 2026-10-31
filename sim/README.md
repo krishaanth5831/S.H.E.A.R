@@ -164,7 +164,7 @@ What it found (2026-10-29):
 ## Step 4 (started): cut-point labels for the vision model
 
     python check_labels.py                       PASS/FAIL checks on four rows, ~10 s
-    python check_labels.py --picture out.png     birdseye frames with the labels drawn on
+    python check_labels.py --picture out.png     each plant zoomed in, leaves numbered, one legend line per leaf
     python check_labels.py --windowed            the row with every cut point marked by the rule's decision
     python render_cutpoints.py --pilot 6         a PILOT set: 6 labelled frames into ~/.cache/shear_sim/cutpoints_pilot
 
@@ -179,6 +179,12 @@ What it found (2026-10-29):
 
   That is what `rule/select_leaves.py` needs (the node kinds, leaf health, truss stage, bottom-up order) and
   what `cutpose.py` needs.
+- Only leaves are cut, never trusses: the cut point is always where a leaf's petiole meets the stem, and only
+  leaves are ever targets (`cutpose.py`, `plant.Cutter`). A truss's keypoint only tells the rule where the
+  truss sits on the stem. ⚠️ The first preview drew truss keypoints as red dots, and a hidden leaf cut point sat
+  on top of the fruit hiding it, so cut points looked like they were on the trusses (K7, 2026-10-31). Previews
+  now draw leaves only, one plant per panel (`preview/*_leaves.png`). Check: 56 of 57 seen cut points lie within
+  3 px of their own petiole; the 85 hidden ones are behind fruit (29), a stem or another leaf.
 - Keypoint visibility comes from a depth render, not the segmentation alone. ⚠️ A cut point behind the stem
   projects onto the stem's front; the segmentation calls it seen, but it's hidden.
 - **Finding:** the birdseye sees only about a quarter of the rule's cut points (7 of 27 in the pilot). The low
