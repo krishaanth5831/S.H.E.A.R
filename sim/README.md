@@ -153,9 +153,11 @@ What it found (2026-10-29):
 
   | where the base is | leaves | rule's cuts | one blade pair, for comparison |
   |---|---|---|---|
-  | one base | 16 % | 16 % | 9 % / 13 % |
-  | base sliding ±15 cm along the aisle | 53 % | 65 % | 31 % / 29 % |
-  | sliding, plus the far side of the row | 66 % | 71 % | 58 % / 58 % |
+  | one base | 20 % | 23 % | 9 % / 13 % |
+  | base sliding ±15 cm along the aisle | 65 % | 71 % | 31 % / 29 % |
+  | sliding, plus the far side of the row | 71 % | 81 % | 58 % / 58 % |
+
+  (Rerun 2026-11-01 after the truss fix in step 5; before it, both pairs read 16/16, 53/65, 66/71 %.)
 
   What's left: twist (petioles pointing at or away from the arm), then truss stalks in the way.
 - The rig's leaflets pass through the hand: it tests the cut, not the approach. Approach paths, servo sag and
@@ -193,3 +195,49 @@ What it found (2026-10-29):
 - Not done yet: claw-camera frames (from step 5's approach poses), domain randomisation, the dataset, training.
   `render_cutpoints.py` is capped at 24 frames until K7 approves the pilot.
 
+
+## Step 5 (started): the scripted cutter, routes planned with RRT
+
+    python check_cutter.py                       PASS/FAIL on one known plant, ~30 s
+    python check_cutter.py --windowed            watch that cut in real time (it loops)
+    python generate_cuts.py --trial 6            a TRIAL batch: 6 cut episodes as videos + summary,
+                                                 into ~/.cache/shear_sim/cuts_trial (capped at 12)
+
+- `rrt.py`: RRT-Connect in joint space, then shortcutting. K7 (2026-11-01): every arm move is planned with RRT.
+  It plans against three lists:
+  - **hard**: stems, pots, the frame. Never touched, 4 mm clearance.
+  - **soft**: fruit, truss stalks, and the stalks and midribs of kept leaves. Avoided when a route exists; when
+    none does, they may be brushed, and the episode says so. Leaflets just get pushed.
+  - **blade guard**: the blades never come within 2 mm of a truss stalk. A blade can cut a truss off; a finger
+    pad resting on it doesn't.
+- `cutter.py`, one episode:
+  1. hold at HOME (raised above the aisle), jaw opening 12 mm
+  2. RRT route to the pre-cut pose, 4 cm back along the fingers
+  3. straight slide onto the petiole
+  4. close: the blades cut
+  5. slide back out
+  6. a new RRT route home
+
+  IK (`cutpose.py`) gives the goal poses; RRT gives the routes. The servos follow a 30 Hz reference with an
+  integral sag correction, and the arm lands within ~0.2 mm.
+
+  The judge checks:
+  - the right leaf came off, and no other one did
+  - the stub is 1.5-3.5 mm
+  - no stem, pot or frame was pressed
+  - no truss stalk took more than 1 N
+  - no blade touched a truss stalk
+- `generate_cuts.py`: per episode, three random dwarf plants. The pot in front of the arm is turned so the
+  oldest leaf the rule cuts points along the row, as a person turns a pot on the bench. The base stays put (K7: no
+  sliding base, SPINE last).
+- Found on the way (2026-11-01):
+  - ⚠️ `stemgen` put every truss ~40 deg off the leaf below it instead of opposite it, so it drooped across the
+    cut point. Fixed. That changed every plant.
+  - ⚠️ The follower's shoulder goes to ±102 deg and the MJCF's to ±100. The IK now stays inside both.
+  - ⚠️ A petiole rising across the fingertips meets the outer blade pair first when the jaw is flipped. The
+    inner pair then cuts the rest as the jaw keeps closing (modelled in `plant.Cutter`, unverified).
+  - From a fixed base, even with pots turned, only about 1 plant in 20 has a cut the arm can plan cleanly. The
+    dwarf's trusses crowd the leaves.
+- Not done yet:
+  - recording as a LeRobot dataset (a SHEAR robot plugin), after K7 approves the trial
+  - claw-camera labels for step 4 from these episodes

@@ -193,8 +193,11 @@ def _ri(rng, lo_hi):
     return int(rng.integers(lo_hi[0], lo_hi[1] + 1))
 
 
-def make_plant(seed, profile=DEFAULT_PROFILE, leaf_scale=1.0):
-    """leaf_scale multiplies every leaf length (the open leaf-scale question; --leaf-scale)."""
+def make_plant(seed, profile=DEFAULT_PROFILE, leaf_scale=1.0, bend=False, turn=0.0):
+    """leaf_scale multiplies every leaf length (the open leaf-scale question; --leaf-scale). bend: petioles that
+    bend at the stem (plant.LeafParams.bend; the scripted cutter uses it, step 3 showed a rigid one dodges a
+    blade once the arm sags). turn: the whole plant turned this far about its stem (rad), like turning the pot
+    on the bench; the same plant otherwise (the random draws don't change)."""
     P = PROFILES[profile] if isinstance(profile, str) else profile
     rng = np.random.default_rng(seed)
     young = bool(rng.random() < P_YOUNG)
@@ -210,9 +213,10 @@ def make_plant(seed, profile=DEFAULT_PROFILE, leaf_scale=1.0):
 
     # Walk up the stem: leaves at internode steps, a truss half an internode above a leaf when it's due.
     nodes, z, az = [], [], []
-    phi = rng.uniform(0, 2 * np.pi)
+    phi = rng.uniform(0, 2 * np.pi) + turn
     due = _ri(rng, P.first_truss_leaves)                 # leaves until the next truss
     n_truss, abstract_leaves = 0, 0
+    phi_leaf = phi                                       # the azimuth of the last leaf placed
     above = _ri(rng, P.above_band_leaves) if P.above_band_leaves else 0
     while True:
         if P.above_band_leaves is None and h > top:
@@ -225,7 +229,10 @@ def make_plant(seed, profile=DEFAULT_PROFILE, leaf_scale=1.0):
             built = zt <= top
             nodes.append(Node(TRUSS, stage=stage, id=f"n{len(nodes):02d}_truss"))
             z.append(zt if built else None)
-            az.append(phi + np.pi + rng.uniform(-0.5, 0.5))      # roughly opposite the leaf below (unverified)
+            # Roughly opposite the leaf below (unverified). ⚠️ This used phi, which had already turned on to the next
+            # leaf: every truss came out ~40 deg off the leaf below it, 1 cm above, and drooped across its cut point
+            # (the scripted cutter's slide hit those stalks, 2026-11-01).
+            az.append(phi_leaf + np.pi + rng.uniform(-0.5, 0.5))
             n_truss += 1
             due = _ri(rng, P.leaves_between)
             continue
@@ -233,6 +240,7 @@ def make_plant(seed, profile=DEFAULT_PROFILE, leaf_scale=1.0):
         nodes.append(Node(LEAF, id=f"n{len(nodes):02d}_"))
         z.append(h if built else None)
         az.append(phi)
+        phi_leaf = phi
         abstract_leaves += not built
         due -= 1
         h += rng.uniform(*P.internode)
@@ -241,7 +249,7 @@ def make_plant(seed, profile=DEFAULT_PROFILE, leaf_scale=1.0):
         # Determinate: the stem ends in a truss (the self-pruning habit).
         nodes.append(Node(TRUSS, stage="green", id=f"n{len(nodes):02d}_truss"))
         z.append(z[-1] + 0.5 * (stem_z[1] - z[-1]))
-        az.append(phi + np.pi)
+        az.append(phi_leaf + np.pi)
 
     leaves = [i for i, n in enumerate(nodes) if n.kind == LEAF]
     trusses = [i for i, n in enumerate(nodes) if n.kind == TRUSS]
@@ -282,7 +290,7 @@ def make_plant(seed, profile=DEFAULT_PROFILE, leaf_scale=1.0):
                            n_seg=_ri(rng, P.leaf_pairs), petiole_r=rng.uniform(*P.petiole_r),
                            petiole_len=P.petiole_frac * L, leaflet_l=ll, leaflet_w=ll * rng.uniform(*P.leaflet_aspect),
                            droop_deg=rng.uniform(*DROOP_DEG[n.health]), rgba=mid, leaflet_rgba=leaflet,
-                           style="tomato", mid_r=P.mid_r)
+                           style="tomato", mid_r=P.mid_r, bend=bend)
         spec.leaf[i] = (lp, np.radians(rng.uniform(*ELEVATION_DEG[n.health])))
     for i in trusses:
         if z[i] is None:
