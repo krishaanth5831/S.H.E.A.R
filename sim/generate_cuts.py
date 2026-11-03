@@ -7,9 +7,9 @@
 
 One episode = one pass along a new row of three random dwarf plants: from the robot's start pose, every leaf the
 rule cuts on p0, then p1, then p2, oldest first, then back to the start pose (K7 2026-11-03). Before the pass each
-pot is turned once, so its oldest leaf to cut points along the row (left or right, +-TURN_JITTER_DEG), the way a
-person sets potted plants on the bench (across the arm's reach, for the plants off to its side); the arm's base stays put (K7 2026-10-31: no sliding base, SPINE comes
-last). ⚠️ Without the turn, 0 of 150 plants had a cut the fixed arm could plan (2026-11-01). A row where no cut
+pot is turned once, to the angle that lets the arm cut the most of that plant's rule cuts (best_turns, K7's pick
+2026-11-03), the way a person sets potted plants on the bench; the arm's base stays put (K7 2026-10-31: no sliding
+base, SPINE comes last). ⚠️ Without the turn, 0 of 150 plants had a cut the fixed arm could plan (2026-11-01). A row where no cut
 can be planned at all is skipped, and why is logged.
 
 Written per episode: ep_KK.mp4, three views (the row from the side | birdseye | claw camera, the phase on top).
@@ -65,6 +65,55 @@ def pot_turns(seeds, rng):
         side = reach_dir + rng.choice((np.pi / 2, -np.pi / 2))
         turns.append(float(side + np.radians(rng.uniform(-TURN_JITTER_DEG, TURN_JITTER_DEG)) - spec.azimuth[i]))
     return tuple(turns)
+
+
+TURN_CANDIDATES_DEG = tuple(range(0, 360, 30))     # pot angles tried per plant (K7 2026-11-03: option 1)
+
+
+def cuttable(scn, rng, k):
+    """How many of the rule's cuts on plant k can be cut cleanly as the plant stands (no route: that's planned later)."""
+    spec = scn.info["specs"][k]
+    sel = ct.sg.label(spec)
+    by_id = {nd.id: i for i, nd in enumerate(spec.nodes)}
+    return sum(isinstance(ct.plan_cut(scn, rng, plant=k, only=by_id[sel.nodes[j].id], route=False), ct.Plan)
+               for j in sel.cuts)
+
+
+ACROSS_DEG = 25.0             # a leaf within this of square to the arm's reach counts in the quick score (cutpose twist)
+TOP_TURNS = 3                 # candidate angles checked in full (settled plant, every cut planned)
+
+
+def best_turns(seeds, rng):
+    """Per plant, the pot angle (rad) that lets the arm cut the most of the rule's cuts on it cleanly, the other pots
+    unturned. First a quick score over TURN_CANDIDATES_DEG: how many of the leaves to cut would point across the
+    arm's reach (within ACROSS_DEG, left or right). Then the TOP_TURNS best are checked in full on the settled plant.
+    ⚠️ Turning each pot only for its oldest leaf (pot_turns) left the plant's other leaves pointing anywhere: 3 of 18
+    rule cuts in the first pass trial; a full search on unsettled plants picked angles that no longer worked once
+    the leaves had drooped (2026-11-03)."""
+    turns, found = [0.0, 0.0, 0.0], []
+    for k in range(len(seeds)):
+        spec = ct.sg.make_plant(seeds[k], bend=True)
+        sel = ct.sg.label(spec)
+        if not sel.cuts:
+            found.append(0)
+            continue
+        by_id = {nd.id: i for i, nd in enumerate(spec.nodes)}
+        az = np.array([spec.azimuth[by_id[sel.nodes[j].id]] for j in sel.cuts])
+        reach_dir = np.arctan2(lo.ROW_Y - lo.AISLE_Y, lo.PLANT_X[k] - lo.ARM_X)
+        quick = []
+        for deg in TURN_CANDIDATES_DEG:
+            off = (az + np.radians(deg) - reach_dir) % np.pi - np.pi / 2       # 0 = square to the reach, either side
+            quick.append(int((np.abs(off) <= np.radians(ACROSS_DEG)).sum()))
+        best_deg, best_n = 0, -1
+        for c in np.argsort(quick)[::-1][:TOP_TURNS]:
+            t = [0.0, 0.0, 0.0]
+            t[k] = np.radians(TURN_CANDIDATES_DEG[c])
+            n = cuttable(ct.Scene(seeds, turns=tuple(t)), rng, k)
+            if n > best_n:
+                best_deg, best_n = TURN_CANDIDATES_DEG[c], n
+        turns[k] = float(np.radians(best_deg))
+        found.append(best_n)
+    return tuple(turns), found
 
 
 def draw_overlay(img, objs, ep):
@@ -150,7 +199,11 @@ def main():
         seeds = tuple(SEED_BASE + 3 * k + j for j in range(3))
         rng = np.random.default_rng(seeds[0])
         t0 = time.time()
-        turns = pot_turns(seeds, rng)
+        turns, found = best_turns(seeds, rng)
+        if not any(found):
+            skipped.append(dict(seeds=seeds, why="no pot angle lets the arm cut any of the rule's leaves cleanly"))
+            print(f"row {seeds[0]}: skipped, no pot angle gives a clean cut [{time.time() - t0:.0f} s]", flush=True)
+            continue
         scn = ct.Scene(seeds, turns=turns)
         # Is there anything to cut at all? (planned again during the pass, from wherever the arm is then)
         first = [ct.plan_cut(scn, rng, plant=p) for p in range(3)]
@@ -171,6 +224,7 @@ def main():
                 vid.frame("result", ep_end)
             vid.close()
         res.update(episode=n, seeds=seeds, pot_turns_deg=[round(float(np.degrees(t)) % 360, 1) for t in turns],
+                   cuttable_at_setup=found,
                    seconds=round(time.time() - t0, 1))
         episodes.append(res)
         print(f"episode {n} (row {seeds[0]}): {res['verdict']}, {res['n_cut']}/{res['n_rule']} rule cuts done, "

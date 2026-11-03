@@ -83,7 +83,8 @@ HARD_CLASSES = {"stem": "stem", "pot": "pot", "rachis": "truss stalk", "pedicel"
 
 
 class Scene:
-    def __init__(self, seeds, turns=None):
+    def __init__(self, seeds, turns=None, settle=True):
+        """settle=False skips the 3 s settle (generate_cuts.best_turns' quick search; the leaves then hang as built)."""
         self.seeds, self.turns = seeds, turns
         self.m, self.d, self.info = lo.build(seeds, bend=True, turns=turns)
         m, d = self.m, self.d
@@ -95,7 +96,7 @@ class Scene:
         d.qpos[self.arm_adr], d.ctrl[self.act] = self.home, self.home
         d.qpos[self.jaw_adr] = d.ctrl[self.jaw_act] = JAW_CLOSED
         mujoco.mj_forward(m, d)
-        for _ in range(round(SETTLE_S / m.opt.timestep)):
+        for _ in range(round(SETTLE_S / m.opt.timestep) if settle else 0):
             mujoco.mj_step(m, d)
         self.ik = cp.CutIK(base=self.info["arm_base"], yaw=self.info["arm_yaw"])
         names = [m.geom(g).name or "" for g in range(m.ngeom)]
@@ -177,9 +178,10 @@ def _jaw_catches(scn, chk, q, target):
     return sorted(out)
 
 
-def plan_cut(scn, rng, plant=0, only=None, q_from=None):
+def plan_cut(scn, rng, plant=0, only=None, q_from=None, route=True):
     """The oldest of the rule's cuts on this plant that has a clean flush pose, a clear slide and an RRT route from
-    q_from (default the start pose), planned on the plant as it stands now (only: just that node)."""
+    q_from (default the start pose), planned on the plant as it stands now (only: just that node). route=False skips
+    the RRT route (to_leaf None): only whether the leaf itself can be cut cleanly."""
     q_from = scn.home if q_from is None else np.asarray(q_from, float)
     spec = scn.info["specs"][plant]
     sel = sg.label(spec)
@@ -214,6 +216,8 @@ def plan_cut(scn, rng, plant=0, only=None, q_from=None):
             if caught:
                 why = f"the closing jaw would also squeeze {caught[:2]}"
                 continue
+            if not route:
+                return Plan(plant, i, prefix, pose, slide, None, False, lp.petiole_r, tries)
             route = rrt.plan(chk, q_from, slide[0], rng)
             brushes = False
             if route is None:
