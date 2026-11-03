@@ -2,7 +2,7 @@
 """Step 5 of the SHEAR sim plan: the scripted cutter (cutter.py) and its RRT routes (rrt.py), checked.
 
   python check_cutter.py                 PASS/FAIL checks on one known plant, exit 1 on a FAIL (~30 s)
-  python check_cutter.py --windowed      watch that cut in the MuJoCo window, in real time (it loops)
+  python check_cutter.py --windowed      watch that row's whole pass in the MuJoCo window, in real time (it loops)
   python check_cutter.py --start 11      another plant (generate_cuts.py's attempt numbering)
 
 Checks:
@@ -11,7 +11,8 @@ Checks:
   planned; the blades stay clear of truss stalks
 - when the route bends, the straight joint-space line would have hit something (INFO when the straight line is
   already clear)
-- played in the physics, the judge passes it: the right leaf, a flush stub, nothing pressed
+- played in the physics from the start pose, the judge passes it: the right leaf, a flush stub, nothing pressed
+- the arm gets back to the start pose on a new RRT route without pressing anything
 
 Run in the lerobot env under the 9 GB cap. Writes nothing.
 """
@@ -23,28 +24,18 @@ import numpy as np
 
 import cutter as ct
 import rrt
-import stemgen as sg
 
-START = 11                   # generate_cuts.py attempt 11 = seeds 700033..35, a plant with a plannable cut
-TURN_JITTER_DEG = 10.0       # as generate_cuts.py
+START = 11                   # generate_cuts.py row attempt 11 = seeds 700033..35, a row with a plannable cut
 
 
 def planned(start):
-    """The same plant, pot turn and plan generate_cuts.py makes for this attempt."""
-    seeds = tuple(700_000 + 3 * start + j for j in range(3))
+    """The same row, pot turns and first plan on p0 that generate_cuts.py makes for this attempt."""
+    import generate_cuts as gc
+    seeds = tuple(gc.SEED_BASE + 3 * start + j for j in range(3))
     rng = np.random.default_rng(seeds[0])
-    spec = sg.make_plant(seeds[0], bend=True)
-    sel = sg.label(spec)
-    by_id = {nd.id: i for i, nd in enumerate(spec.nodes)}
-    for j in sel.cuts[:2]:
-        i = by_id[sel.nodes[j].id]
-        side = rng.choice((0.0, np.pi))
-        turn = side + np.radians(rng.uniform(-TURN_JITTER_DEG, TURN_JITTER_DEG)) - spec.azimuth[i]
-        scn = ct.Scene(seeds, turns=(turn, 0.0, 0.0))
-        p = ct.plan_cut(scn, rng, only=i)
-        if isinstance(p, ct.Plan):
-            return scn, p, rng
-    return None, None, rng
+    scn = ct.Scene(seeds, turns=gc.pot_turns(seeds, rng))
+    p = ct.plan_cut(scn, rng, plant=0)
+    return scn, (p if isinstance(p, ct.Plan) else None), rng
 
 
 def run_checks(start):
@@ -79,11 +70,16 @@ def run_checks(start):
         bumps = chk.hits(scn.home) or not chk.segment_free(scn.home, p.to_leaf[-1], soft=not p.brushes_leaves)
         report(bumps, f"the RRT route bends around things ({len(p.to_leaf)} points): the straight joint-space "
                       f"line from HOME to the pre-cut pose would {'hit something' if bumps else 'be clear too'}")
-    res = ct.run(scn, p, None, rng)
+    ep = ct.Episode(scn, rng)
+    ep.hold("start", ct.HOLD_S)
+    res = ep.cut(p)
+    back = ep.go_start()
     report(res["verdict"] == "PASS", f"played in the physics: {res['verdict']}, stub {res['stub_mm']} mm, aim error "
            f"{res['aim_error_mm']} mm, peaks {res['peaks_n']}" + (f" ({'; '.join(res['why'])})" if res["why"] else ""))
     if res["notes"]:
         print("INFO " + "; ".join(res["notes"]))
+    report(not back["pressed"], f"back to the start pose on a new RRT route ({back['route_points']} points), "
+                                f"peaks {back['peaks_n']}")
     print(f"\n{'ALL PASS' if not fails else f'{fails} FAIL'}")
     return fails
 
@@ -92,18 +88,14 @@ def windowed(start):
     import mujoco.viewer
     while True:
         scn, p, rng = planned(start)
-        if p is None:
-            print("nothing to plan on this plant")
-            return
-        print(f"plant {700_000 + 3 * start}, leaf {scn.info['specs'][0].nodes[p.node].id}: watch the route, the slide, "
-              f"the cut. Close the window (Ctrl+C on Wayland) to stop.", flush=True)
+        print(f"row {700_000 + 3 * start}: the whole pass from the start pose, plant by plant. Close the window "
+              f"(Ctrl+C on Wayland) to stop.", flush=True)
         with mujoco.viewer.launch_passive(scn.m, scn.d) as v:
-            sx, sy = scn.info["stems"][0]
-            v.cam.lookat[:] = (sx, sy - 0.08, 0.24)
-            v.cam.distance, v.cam.azimuth, v.cam.elevation = 0.6, 215, -18
+            v.cam.lookat[:] = (ct.lo.PLANT_X[1], (ct.lo.ROW_Y + ct.lo.AISLE_Y) / 2, 0.22)
+            v.cam.distance, v.cam.azimuth, v.cam.elevation = 0.85, 245, -22
             last = [time.time()]
 
-            def frame(phase):
+            def frame(phase, ep):
                 if not v.is_running():
                     raise KeyboardInterrupt
                 v.sync()
@@ -113,10 +105,10 @@ def windowed(start):
                 last[0] = time.time()
 
             try:
-                res = ct.run(scn, p, frame, rng)
+                res = ct.run_pass(scn, rng, frame)
             except KeyboardInterrupt:
                 return
-            print(f"  {res['verdict']} stub {res['stub_mm']} mm {res['why']} {res['notes']}", flush=True)
+            print(f"  {res['verdict']}: {res['n_cut']} of the rule's {res['n_rule']} cuts", flush=True)
             if not v.is_running():
                 return
 

@@ -13,7 +13,10 @@ shortened by cutting corners wherever the straight joint-space line between two 
 Two kinds of obstacle:
 - **hard**: never touched, never closer than the clearance (stems, truss stalks, fruit, pots, the greenhouse frame,
   the floor). Damage there costs a plant or a truss.
-- **soft**: the leaves the rule keeps, fruit, truss stalks. Avoided when a route exists that clears them; when none
+- **firm**: fruit and truss stalks. Always avoided on routes (SOFT_CLEARANCE); a finger pad may rest on them only
+  where a caller asks for firm=False (SHEAR's short slide onto the petiole). ⚠️ When the fallback route could brush
+  them too, it pushed a truss stalk with 8 N on the way to a leaf (2026-11-03).
+- **soft**: the stiff parts of the leaves the rule keeps. Avoided when a route exists that clears them; when none
   does, plan() can be asked again with soft=False and the route may brush them (a hand reaching into a canopy does).
 - **blade_guard**: things the BLADES never come near, even with soft=False (truss stalks: a blade on one can cut
   the truss off; a finger pad resting on it doesn't).
@@ -39,7 +42,7 @@ SHORTCUT_TRIES = 150
 
 
 class Checker:
-    def __init__(self, m, d, hard=(), soft=(), ignore=(), blade_guard=(), prefix="arm/"):
+    def __init__(self, m, d, hard=(), soft=(), ignore=(), blade_guard=(), firm=(), prefix="arm/"):
         self.m = copy.deepcopy(m)
         self.d = mujoco.MjData(self.m)
         self.d.qpos[:] = d.qpos
@@ -49,11 +52,13 @@ class Checker:
         for g in np.flatnonzero(self.is_arm & (self.m.geom_contype > 0)):
             self.m.geom_margin[g] = CLEARANCE           # report contacts this close, not only touching
         self.hard, self.soft, self.ignore, self.guard = set(hard), set(soft), set(ignore), set(blade_guard)
+        self.firm = set(firm)
         self.blades = {g for g in range(self.m.ngeom) if self.is_arm[g] and (self.m.geom(g).name or "").startswith(
             prefix + "blade_") and self.m.geom_contype[g]}
         self.n_checks = 0
 
-    def hits(self, q, soft=True, clearance=CLEARANCE, soft_clearance=SOFT_CLEARANCE, ignore=()):
+    def hits(self, q, soft=True, clearance=CLEARANCE, soft_clearance=SOFT_CLEARANCE, ignore=(), firm=True,
+             firm_clearance=SOFT_CLEARANCE):
         """Names of what the arm comes within the clearance of at joint config q (5, rad)."""
         self.n_checks += 1
         self.d.qpos[self.adr] = q
@@ -70,6 +75,8 @@ class Checker:
             if other in self.guard and mine in self.blades and c.dist < BLADE_CLEARANCE:
                 out.add("blade on " + (self.m.geom(other).name or f"geom{other}"))
             elif other in self.hard and c.dist < clearance:
+                out.add(self.m.geom(other).name or f"geom{other}")
+            elif firm and other in self.firm and c.dist < firm_clearance:
                 out.add(self.m.geom(other).name or f"geom{other}")
             elif soft and other in self.soft and c.dist < soft_clearance:
                 out.add(self.m.geom(other).name or f"geom{other}")

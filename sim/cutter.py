@@ -1,39 +1,44 @@
-"""Step 5 of the SHEAR sim plan: the scripted cutter. It plans one cut, plays it in the physics, and judges it.
+"""Step 5 of the SHEAR sim plan: the scripted cutter. One episode is one deleafing pass along the row.
 
-    sc_ = Scene(seeds)                          the row (layout.py, bending petioles), settled with the arm at HOME
-    plan = plan_cut(sc_, rng)                   the first of the rule's cuts on p0 it can plan, or a Skip with why
-    result = run(sc_, plan, frame_cb)           plays it; frame_cb(phase) is called at FPS, for video
-    result["verdict"], result["why"]            the judge
+    scn = Scene(seeds, turns)                   the row (layout.py, bending petioles), settled with the arm at START
+    out = run_pass(scn, rng, frame_cb)          start pose -> every leaf the rule cuts, plant by plant -> start pose
+    out["cuts"], out["skipped"], out["verdict"] the judge, per cut and for the pass
 
-The motion, start to end (K7 2026-11-01: every arm move is planned with RRT, around what it mustn't damage):
-1. **hold** at HOME, the jaw opening to JAW_APPROACH_DEG (12 mm between the blades).
-2. **to_leaf**: an RRT route (rrt.py) from HOME to the pre-cut pose, SLIDE_M short of the cut along the fingers.
-   It keeps CLEARANCE from stems, pots and the frame (never touched), and SOFT_CLEARANCE from fruit, truss stalks
-   and the stiff parts (petiole, midrib) of the leaves the rule keeps; leaflets give way and may be pushed
-   (⚠️ with leaflets as obstacles too, no route on a dense dwarf cleared them, 2026-11-01). If no route clears those, one that may brush them is taken, and the episode
-   says so. The blades never come within 2 mm of a truss stalk (a blade there can cut the truss off; a finger pad
-   resting on it doesn't). ⚠️ With stalks never-touch for the whole arm, a dwarf's truss drooping across the cut
-   point blocked most cuts (2026-11-01). ⚠️ Fruit was "never touch" at first: then no plant in 40 had a cut whose slide in didn't
-   touch a fruit (2026-11-01). A fruit nudged on its pedicel isn't damaged (B.L.U.S.H lets the fingers push a
-   neighbour 15 mm); the stalk it hangs on is.
-3. **slide_in**: straight along the fingers onto the petiole, the gripper turned as the cut pose (cutpose.py,
+The pass (K7 2026-11-03): it starts and ends at the robot's start pose (B.L.U.S.H's START_NORM, folded beside
+its base), and works the three plants in front of it in order, p0, p1, p2. On each plant it cuts the leaves the
+rule picks (rule/select_leaves.py), oldest first. A leaf it can't plan a clean cut for is skipped and logged.
+Skipping is the cheap mistake: a person follows up (research note).
+
+One cut:
+1. **to_leaf**: an RRT route (rrt.py) from wherever the arm is to the pre-cut pose, SLIDE_M short of the cut along
+   the fingers. K7 2026-11-01: every arm move is planned with RRT, around what it mustn't damage. It keeps
+   CLEARANCE from stems, pots and the frame (never touched) and SOFT_CLEARANCE from fruit and truss stalks (always
+   avoided on a route), and from the stiff parts (petiole, midrib) of the leaves the rule keeps. Leaflets give way
+   and may be pushed. If no route clears the kept leaves, one that may brush them is taken, and the cut says so. The blades never come within
+   2 mm of a truss stalk: a blade there can cut the truss off; a finger pad resting on it doesn't.
+   ⚠️ What each of those choices fixed (2026-11-01): with leaflets as obstacles, no route on a dense dwarf
+   cleared them; with truss stalks never-touch for the whole arm, a truss drooping across the cut point
+   blocked most cuts; with fruit never-touch, no plant in 40 had a slide in that missed every fruit. A fruit
+   nudged on its pedicel isn't damaged (B.L.U.S.H lets the fingers push a neighbour 15 mm).
+2. **slide_in**: straight along the fingers onto the petiole, the gripper held in the cut pose (cutpose.py,
    flush, 2 mm stub). The petiole slides between the open blades from the tips.
-4. **close**: the jaw closes like the real servo; the blades cut the petiole and the leaf drops.
-5. **slide_out**: straight back out, the jaw shut.
-6. **home**: an RRT route back to HOME, planned again from where the plant is now.
+3. **close**: the jaw closes like the real servo; the blades cut the petiole and the leaf drops.
+4. **slide_out**: straight back out, the jaw shut.
+Then the next cut's route starts from there; after the last, an RRT route back to START.
 
 IK and RRT do different jobs: IK finds where the joints must end up (the cut pose and the slide's poses); RRT
 finds a route there that steers around things.
 
-The judge: the right leaf came off, no other leaf did, the stub is flush (STUB_OK), and the arm never pressed
-a stem, a truss stalk or the frame (FORCE_LIMIT), and no blade touched a truss stalk at all. Fruit may be pushed (FRUIT_PUSH_N) and kept leaves brushed;
-both are logged.
+The judge, per cut: the right leaf came off, no other leaf did, the stub is flush (STUB_OK), the arm never
+pressed a stem, a truss stalk or the frame (FORCE_LIMIT), and no blade touched a truss stalk. Fruit pushed
+(FRUIT_PUSH_N) and kept leaves brushed are logged.
 """
 from dataclasses import dataclass, field
 
 import mujoco
 import numpy as np
 
+import arm_map
 import cutpose as cp
 import layout as lo
 import plant as pl
@@ -43,10 +48,12 @@ import scene as sc
 import stemgen as sg
 
 FPS = 30                          # config/hardware.env: every dataset records at 30 fps (as B.L.U.S.H)
-# Raised, the gripper above the middle of the aisle at ~0.28 m with the fingers level toward the row (like
-# layout.py's ready pose): best of a grid search clear of everything with the planner's margins (2026-11-01).
-# ⚠️ A folded-forward guess (0, -100, 95, 52 deg) sat inside the pot and the anchor rail, so every route failed.
-HOME = tuple(np.radians((0.0, -90.0, -5.0, 90.0)))
+# The robot's start pose, the same as B.L.U.S.H's episodes (sim/scene.py START_NORM, commit 41da64d), in lerobot
+# units: folded low beside its base, turned away from the row. Clear of everything in this greenhouse too (checked
+# 2026-11-03). Every pass starts and ends here (K7 2026-11-03).
+START_NORM = (-90.0, -40.0, 90.0, -40.0, 0.0, 50.0)
+# ⚠️ Until 2026-11-03 the episodes started from a raised pose above the aisle (0, -90, -5, 90 deg): K7 saw they
+# didn't start from the robot's start position.
 OFFSET = 0.002                    # flush stub asked for (check_approach.py: 2 mm is the closest clean cut)
 # The petiole's axis this far above the near fixed blade's edge plus its radius, at the cut pose. ⚠️ At 1 mm
 # (cutpose.APPROACH_CLEARANCE) the far blade pair pushed the petiole down first; it pivots at the stem, so it hardly
@@ -83,8 +90,8 @@ class Scene:
         self.arm_adr = np.array([m.joint("arm/" + j).qposadr[0] for j in cp.ARM5])
         self.act = np.array([m.actuator("arm/" + j).id for j in cp.ARM5])
         self.jaw_adr, self.jaw_act = m.joint("arm/gripper").qposadr[0], m.actuator("arm/gripper").id
-        self.roll = sc.settled_arm()[0]["wrist_roll"]
-        self.home = np.array(HOME + (self.roll,))
+        self.start = arm_map.FollowerMap().norm_to_rad(START_NORM)[:5]
+        self.home = self.start                    # where every pass starts and ends
         d.qpos[self.arm_adr], d.ctrl[self.act] = self.home, self.home
         d.qpos[self.jaw_adr] = d.ctrl[self.jaw_act] = JAW_CLOSED
         mujoco.mj_forward(m, d)
@@ -116,8 +123,9 @@ class Scene:
         return {g for g, c in self.cls.items() if c in ("leaf", "leaflet") and self.names[g].startswith(prefix)}
 
     def checker(self, target_prefix):
-        soft = {g for g, c in self.cls.items() if c in ("leaf", "fruit", "truss stalk")}
-        chk = rrt.Checker(self.m, self.d, hard=self.hard, soft=soft, blade_guard=self.stalks)
+        soft = {g for g, c in self.cls.items() if c == "leaf"}
+        firm = {g for g, c in self.cls.items() if c in ("fruit", "truss stalk")}
+        chk = rrt.Checker(self.m, self.d, hard=self.hard, soft=soft, firm=firm, blade_guard=self.stalks)
         chk.d.qpos[self.jaw_adr] = np.radians(JAW_APPROACH_DEG)
         return chk, self.leaf_geoms(target_prefix)
 
@@ -129,7 +137,7 @@ class Plan:
     prefix: str
     pose: object                      # cutpose.CutPose
     slide: list                       # joint configs, pre-cut -> cut
-    to_leaf: list                     # RRT route HOME -> pre-cut
+    to_leaf: list                     # RRT route from where the arm was -> pre-cut
     brushes_leaves: bool              # True if no route cleared the kept leaves
     petiole_r: float
     tries: list = field(default_factory=list)   # (node, why not) for the leaves it skipped
@@ -164,14 +172,15 @@ def _jaw_catches(scn, chk, q, target):
     out = set()
     for deg in np.linspace(JAW_APPROACH_DEG, np.degrees(JAW_CLOSED), 6):
         chk.d.qpos[scn.jaw_adr] = np.radians(deg)
-        out |= chk.hits(q, soft=True, clearance=SLIDE_CLEARANCE, soft_clearance=0.0, ignore=target)
+        out |= chk.hits(q, soft=True, clearance=SLIDE_CLEARANCE, soft_clearance=0.0, ignore=target, firm_clearance=0.0)
     chk.d.qpos[scn.jaw_adr] = np.radians(JAW_APPROACH_DEG)
     return sorted(out)
 
 
-def plan_cut(scn, rng, plant=0, only=None):
-    """The oldest of the rule's cuts on this plant that has a clean flush pose, a clear slide and an RRT route
-    (only: just that node)."""
+def plan_cut(scn, rng, plant=0, only=None, q_from=None):
+    """The oldest of the rule's cuts on this plant that has a clean flush pose, a clear slide and an RRT route from
+    q_from (default the start pose), planned on the plant as it stands now (only: just that node)."""
+    q_from = scn.home if q_from is None else np.asarray(q_from, float)
     spec = scn.info["specs"][plant]
     sel = sg.label(spec)
     by_id = {n.id: i for i, n in enumerate(spec.nodes)}
@@ -197,20 +206,21 @@ def plan_cut(scn, rng, plant=0, only=None):
             if slide is None:
                 why = "the straight slide in isn't reachable"
                 continue
-            if not chk.path_ok(slide, soft=False, clearance=SLIDE_CLEARANCE, ignore=target):
-                why = f"the slide in would hit {sorted(chk.hits(slide[-1], soft=False, clearance=SLIDE_CLEARANCE, ignore=target))[:3]}"
+            # on the short slide a finger pad may rest on a fruit or a truss stalk (firm=False); blades never do
+            if not chk.path_ok(slide, soft=False, firm=False, clearance=SLIDE_CLEARANCE, ignore=target):
+                why = f"the slide in would hit {sorted(chk.hits(slide[-1], soft=False, firm=False, clearance=SLIDE_CLEARANCE, ignore=target))[:3]}"
                 continue
             caught = _jaw_catches(scn, chk, slide[-1], target)
             if caught:
                 why = f"the closing jaw would also squeeze {caught[:2]}"
                 continue
-            route = rrt.plan(chk, scn.home, slide[0], rng)
+            route = rrt.plan(chk, q_from, slide[0], rng)
             brushes = False
             if route is None:
-                route = rrt.plan(chk, scn.home, slide[0], rng, soft=False)
+                route = rrt.plan(chk, q_from, slide[0], rng, soft=False)
                 brushes = route is not None
             if route is None:
-                why = "RRT found no route clear of stems, pots, the frame (and blades clear of truss stalks)"
+                why = "RRT found no route clear of stems, pots, the frame, fruit and truss stalks"
                 continue
             return Plan(plant, i, prefix, pose, slide, route, brushes, lp.petiole_r, tries)
         tries.append((spec.nodes[i].id, why))
@@ -236,16 +246,20 @@ def _timed(path, speed=JOINT_SPEED, min_s=0.8):
 class Monitor:
     """Peak force of any arm part on each kind of thing it mustn't damage, plus kept leaves touched."""
 
-    def __init__(self, scn, target_prefix):
+    def __init__(self, scn, target_prefix=""):
         self.scn = scn
-        self.target = scn.leaf_geoms(target_prefix)
-        self.peak = {k: 0.0 for k in ("stem", "truss stalk", "fruit", "pot", "frame")}
-        self.where = {}                   # kind -> the phase its peak force came in
         self.phase = ""
-        self.leaves_touched = set()
-        self.blade_on_stalk = 0.0
+        self.reset(target_prefix)
         self.blades = {g for g in scn.arm_geoms if scn.m.geom(g).name.startswith("arm/blade_")}
         self._f6 = np.zeros(6)
+
+    def reset(self, target_prefix=""):
+        """New tallies (each cut is judged on its own)."""
+        self.target = self.scn.leaf_geoms(target_prefix) if target_prefix else set()
+        self.peak = {k: 0.0 for k in ("stem", "truss stalk", "fruit", "pot", "frame")}
+        self.where = {}                   # kind -> the phase its peak force came in
+        self.leaves_touched = set()
+        self.blade_on_stalk = 0.0
 
     def step(self):
         m, d, scn = self.scn.m, self.scn.d, self.scn
@@ -269,105 +283,150 @@ class Monitor:
                 self.blade_on_stalk = max(self.blade_on_stalk, float(self._f6[0]))
 
 
-def run(scn, plan, frame_cb=None, rng=None):
-    """Play the plan in the physics at 500 Hz, the servos following a 30 Hz reference with sag correction."""
-    m, d = scn.m, scn.d
-    rng = rng or np.random.default_rng(0)
-    spec = scn.info["specs"][plan.plant]
-    target_where = scn.info["where"][(plan.plant, plan.node)]
-    cut_pt = target_where["base"]
-    cutters = {}
-    for (k, i), w in scn.info["where"].items():
-        if np.linalg.norm(w["base"] - cut_pt) < NEAR_LEAF_M:
-            lp, _ = scn.info["specs"][k].leaf[i]
-            cutters[(k, i)] = pl.Cutter(m, d, w, pl.cut_force_for(lp.petiole_r))
-    mon = Monitor(scn, plan.prefix)
-    jaw_open = np.radians(JAW_APPROACH_DEG)
-    T_to, q_to = _timed(plan.to_leaf)
-    T_sl = SLIDE_M / SLIDE_SPEED
-    _, q_sl = _timed(plan.slide, min_s=T_sl)
-    phases = [("hold", HOLD_S), ("to_leaf", T_to), ("slide_in", T_sl), ("close", CLOSE_S + CUT_WAIT_S),
-              ("slide_out", T_sl)]
-    I = np.zeros(5)
-    steps_per_frame = round(1.0 / FPS / m.opt.timestep)
-    log = dict(phase_t={})
-    q_now = lambda: d.qpos[scn.arm_adr].copy()
+class Episode:
+    """Plays cuts one after another in the physics at 500 Hz, the servos following a 30 Hz reference with an
+    integral sag correction. frame_cb(phase, episode) is called at FPS (video)."""
 
-    def play(name, dur, ref, jaw, cut_watch=False):
-        nonlocal I
-        log["phase_t"][name] = round(dur, 2)
-        mon.phase = name
-        n_frames = max(1, round(dur * FPS))
-        for f in range(n_frames):
+    def __init__(self, scn, rng, frame_cb=None):
+        self.scn, self.rng, self.cb = scn, rng, frame_cb
+        m, d = scn.m, scn.d
+        # ⚠️ One Cutter per leaf for the whole pass: a Cutter made later would reset() a leaf already cut back
+        # onto the stem. Only the ones near the current cut are stepped.
+        self.cutters = {key: pl.Cutter(m, d, w, pl.cut_force_for(scn.info["specs"][key[0]].leaf[key[1]][0].petiole_r))
+                        for key, w in scn.info["where"].items()}
+        self.mon = Monitor(scn)
+        self.I = np.zeros(5)
+        self.steps_per_frame = round(1.0 / FPS / m.opt.timestep)
+        self.jaw = float(d.qpos[scn.jaw_adr])
+        self.target = None                # (plant, node) being cut now, for the video
+        self.done = set()                 # (plant, node) cut so far
+        self.t = 0.0
+
+    def q_now(self):
+        return self.scn.d.qpos[self.scn.arm_adr].copy()
+
+    def play(self, name, dur, ref, jaw, watch=()):
+        scn, m, d = self.scn, self.scn.m, self.scn.d
+        self.mon.phase = name
+        for f in range(max(1, round(dur * FPS))):
             t = (f + 1) / FPS
             q_ref = ref(t)
-            I = np.clip(I + SAG_KI * (q_ref - q_now()), -SAG_MAX, SAG_MAX)
-            d.ctrl[scn.act] = q_ref + I
-            d.ctrl[scn.jaw_act] = jaw(t)
-            for s in range(steps_per_frame):
+            self.I = np.clip(self.I + SAG_KI * (q_ref - self.q_now()), -SAG_MAX, SAG_MAX)
+            d.ctrl[scn.act] = q_ref + self.I
+            self.jaw = jaw(t)
+            d.ctrl[scn.jaw_act] = self.jaw
+            for k in range(self.steps_per_frame):
                 mujoco.mj_step(m, d)
-                if cut_watch:
-                    for c in cutters.values():
-                        c.step()
-                if s % 5 == 0:
-                    mon.step()
-            if frame_cb:
-                frame_cb(name)
+                for c in watch:
+                    c.step()
+                if k % 5 == 0:
+                    self.mon.step()
+            self.t += 1.0 / FPS
+            if self.cb:
+                self.cb(name, self)
 
-    home = scn.home
-    play("hold", HOLD_S, lambda t: home, lambda t: JAW_CLOSED + (jaw_open - JAW_CLOSED) * min(1, t / HOLD_S))
-    play("to_leaf", T_to, q_to, lambda t: jaw_open)
-    play("slide_in", T_sl, lambda t: q_sl(t), lambda t: jaw_open)
-    err_at_cut = float(np.linalg.norm(scn.ik.fk(q_now())[0] - scn.ik.fk(plan.slide[-1])[0]))
-    log["joint_err_deg_at_cut"] = np.round(np.degrees(q_now() - plan.slide[-1]), 2).tolist()
-    log["sag_correction_deg"] = np.round(np.degrees(I), 2).tolist()
-    play("close", CLOSE_S + CUT_WAIT_S, lambda t: plan.slide[-1],
-         lambda t: jaw_open + (JAW_CLOSED - jaw_open) * min(1, t / CLOSE_S), cut_watch=True)
-    back = plan.slide[::-1]
-    _, q_back = _timed(back, min_s=T_sl)
-    play("slide_out", T_sl, q_back, lambda t: JAW_CLOSED, cut_watch=True)
-    # the route home is planned again from where everything is now (the leaf is gone, others were pushed)
-    chk, _ = scn.checker(plan.prefix)
-    chk.d.qpos[:] = d.qpos
-    chk.d.qpos[scn.jaw_adr] = JAW_CLOSED
-    route = rrt.plan(chk, q_now(), home, rng) or rrt.plan(chk, q_now(), home, rng, soft=False)
-    home_brushes = route is not None and not chk.path_ok(route)
-    if route is None:
-        route = [q_now(), home]
-        log["home_route"] = "no RRT route: straight joint move"
-    T_h, q_h = _timed(route)
-    play("home", T_h, q_h, lambda t: JAW_CLOSED)
-    play("hold", HOLD_S, lambda t: home, lambda t: JAW_CLOSED)
+    def hold(self, name, dur, jaw_to=None):
+        j0 = self.jaw
+        jaw_to = j0 if jaw_to is None else jaw_to
+        q_hold = self.scn.d.ctrl[self.scn.act] - self.I        # hold the last reference
+        self.play(name, dur, lambda t: q_hold, lambda t: j0 + (jaw_to - j0) * min(1.0, t / max(dur, 1e-6)))
 
-    # --- the judge ---
-    tgt = cutters[(plan.plant, plan.node)]
-    others = [k for k, c in cutters.items() if k != (plan.plant, plan.node) and c.cut_t is not None]
-    why = []
-    if tgt.cut_t is None:
-        why.append(f"the target leaf wasn't cut (blades {tgt.peak['squeeze']:.1f} N, need {tgt.cut_force:.1f})")
-    elif not STUB_OK[0] <= tgt.stub <= STUB_OK[1]:
-        why.append(f"stub {tgt.stub * 1000:.1f} mm")
-    if others:
-        why.append(f"cut the wrong leaf too: {others}")
-    for k, lim in FORCE_LIMIT.items():
-        if mon.peak[k] > lim:
-            why.append(f"pressed the {k} with {mon.peak[k]:.1f} N ({mon.where.get(k)})")
-    if mon.blade_on_stalk > 0:
-        why.append(f"a blade touched a truss stalk ({mon.blade_on_stalk:.1f} N)")
-    notes = []
-    if mon.peak["fruit"] > FRUIT_PUSH_N:
-        notes.append(f"pushed fruit with {mon.peak['fruit']:.1f} N")
-    if mon.leaves_touched:
-        notes.append(f"brushed {len(mon.leaves_touched)} kept leaves")
-    if plan.brushes_leaves or home_brushes:
-        notes.append("no route cleared every kept leaf")
-    return dict(verdict="PASS" if not why else "FAIL", why=why, notes=notes, target=spec.nodes[plan.node].id,
-                stub_mm=None if tgt.stub is None else round(tgt.stub * 1000, 2),
-                cut_force_n=round(tgt.cut_force, 1), blade_peak_n=round(tgt.peak["squeeze"], 1),
-                pair_peaks_n=[round(x, 1) for x in tgt.peak_pairs],
-                second_cut=bool(tgt.second_cut),
-                edge_peaks_n={m.geom(b).name.replace("arm/", ""): round(v, 1) for b, v in tgt.peak_edges.items()},
-                aim_error_mm=round(err_at_cut * 1000, 1), peaks_n={k: round(v, 2) for k, v in mon.peak.items()},
-                pose=dict(lean=round(plan.pose.lean_deg, 1), twist=round(plan.pose.twist_deg, 1),
-                          pitch=round(plan.pose.pitch_deg, 1), blade_pair=plan.pose.face),
-                route_points=len(plan.to_leaf), **log)
+    def route(self, name, path, jaw_to):
+        T, q = _timed(path)
+        j0 = self.jaw
+        self.play(name, T, q, lambda t: j0 + (jaw_to - j0) * min(1.0, t / 0.5))
+
+    def cut(self, plan):
+        """One cut, judged on its own."""
+        scn, d = self.scn, self.scn.d
+        key = (plan.plant, plan.node)
+        self.target = key
+        self.mon.reset(plan.prefix)
+        cut_pt = scn.info["where"][key]["base"]
+        near = [c for k, c in self.cutters.items() if k not in self.done
+                and np.linalg.norm(scn.info["where"][k]["base"] - cut_pt) < NEAR_LEAF_M]
+        jaw_open = np.radians(JAW_APPROACH_DEG)
+        self.route("to_leaf", plan.to_leaf, jaw_open)
+        T_sl = SLIDE_M / SLIDE_SPEED
+        _, q_sl = _timed(plan.slide, min_s=T_sl)
+        self.play("slide_in", T_sl, q_sl, lambda t: jaw_open)
+        err = float(np.linalg.norm(scn.ik.fk(self.q_now())[0] - scn.ik.fk(plan.slide[-1])[0]))
+        joint_err = np.round(np.degrees(self.q_now() - plan.slide[-1]), 2).tolist()
+        self.play("close", CLOSE_S + CUT_WAIT_S, lambda t: plan.slide[-1],
+                  lambda t: jaw_open + (JAW_CLOSED - jaw_open) * min(1, t / CLOSE_S), watch=near)
+        _, q_back = _timed(plan.slide[::-1], min_s=T_sl)
+        self.play("slide_out", T_sl, q_back, lambda t: JAW_CLOSED, watch=near)
+        tgt = self.cutters[key]
+        others = [k for k, c in self.cutters.items() if k != key and k not in self.done and c.cut_t is not None]
+        for k in others + ([key] if tgt.cut_t is not None else []):
+            self.done.add(k)
+        self.target = None
+        mon = self.mon
+        why = []
+        if tgt.cut_t is None:
+            why.append(f"the target leaf wasn't cut (blades {tgt.peak['squeeze']:.1f} N, need {tgt.cut_force:.1f})")
+        elif not STUB_OK[0] <= tgt.stub <= STUB_OK[1]:
+            why.append(f"stub {tgt.stub * 1000:.1f} mm")
+        if others:
+            why.append(f"cut the wrong leaf too: {[scn.info['specs'][k].nodes[i].id for k, i in others]}")
+        for k, lim in FORCE_LIMIT.items():
+            if mon.peak[k] > lim:
+                why.append(f"pressed the {k} with {mon.peak[k]:.1f} N ({mon.where.get(k)})")
+        if mon.blade_on_stalk > 0:
+            why.append(f"a blade touched a truss stalk ({mon.blade_on_stalk:.1f} N)")
+        notes = []
+        if mon.peak["fruit"] > FRUIT_PUSH_N:
+            notes.append(f"pushed fruit with {mon.peak['fruit']:.1f} N")
+        if mon.leaves_touched:
+            notes.append(f"brushed {len(mon.leaves_touched)} kept leaves")
+        if plan.brushes_leaves:
+            notes.append("no route cleared every kept leaf")
+        return dict(verdict="PASS" if not why else "FAIL", why=why, notes=notes, plant=plan.plant,
+                    leaf=scn.info["specs"][plan.plant].nodes[plan.node].id,
+                    stub_mm=None if tgt.stub is None else round(tgt.stub * 1000, 2), second_cut=bool(tgt.second_cut),
+                    cut_force_n=round(tgt.cut_force, 1), blade_peak_n=round(tgt.peak["squeeze"], 1),
+                    pair_peaks_n=[round(x, 1) for x in tgt.peak_pairs], aim_error_mm=round(err * 1000, 1),
+                    joint_err_deg_at_cut=joint_err, peaks_n={k: round(v, 2) for k, v in mon.peak.items()},
+                    pose=dict(lean=round(plan.pose.lean_deg, 1), twist=round(plan.pose.twist_deg, 1),
+                              pitch=round(plan.pose.pitch_deg, 1), blade_pair=plan.pose.face),
+                    route_points=len(plan.to_leaf))
+
+    def go_start(self):
+        """An RRT route back to the start pose, planned on the plant as it stands now."""
+        chk, _ = self.scn.checker("none_")
+        q0 = self.q_now()
+        path = rrt.plan(chk, q0, self.scn.start, self.rng) or rrt.plan(chk, q0, self.scn.start, self.rng, soft=False)
+        if path is None:
+            path = [q0, self.scn.start]
+        self.mon.reset()
+        self.route("to_start", path, JAW_CLOSED)
+        return dict(route_points=len(path), peaks_n={k: round(v, 2) for k, v in self.mon.peak.items()},
+                    pressed=[k for k, lim in FORCE_LIMIT.items() if self.mon.peak[k] > lim])
+
+
+def run_pass(scn, rng, frame_cb=None, plants=(0, 1, 2)):
+    """One deleafing pass: start pose -> the rule's cuts on each plant in turn, oldest first -> start pose."""
+    ep = Episode(scn, rng, frame_cb)
+    ep.hold("start", HOLD_S)
+    cuts, skipped = [], []
+    for k in plants:
+        spec = scn.info["specs"][k]
+        sel = sg.label(spec)
+        by_id = {n.id: i for i, n in enumerate(spec.nodes)}
+        if not sel.cuts:
+            skipped.append(dict(plant=k, leaf=None, why="the rule cuts nothing on this plant"))
+        for j in sel.cuts:
+            i = by_id[sel.nodes[j].id]
+            if (k, i) in ep.done:
+                continue
+            p = plan_cut(scn, rng, plant=k, only=i, q_from=ep.q_now())
+            if isinstance(p, Skip):
+                skipped.append(dict(plant=k, leaf=spec.nodes[i].id, why=p.tries[0][1] if p.tries else p.why))
+                continue
+            cuts.append(ep.cut(p))
+    end = ep.go_start()
+    ep.hold("end", HOLD_S)
+    ok = bool(cuts) and all(c["verdict"] == "PASS" for c in cuts) and not end["pressed"]
+    return dict(verdict="PASS" if ok else "FAIL", cuts=cuts, skipped=skipped, back_to_start=end,
+                n_cut=sum(c["verdict"] == "PASS" for c in cuts), n_rule=sum(len(sg.label(scn.info["specs"][k]).cuts) for k in plants),
+                seconds_sim=round(ep.t, 1))
