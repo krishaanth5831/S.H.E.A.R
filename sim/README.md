@@ -263,7 +263,13 @@ Run under a real-memory fuse: `systemd-run --user --scope -q -p MemoryMax=20G -p
   - `robot_type` `so_follower`, so sim and real SHEAR data can merge
 - Only passes the judge accepts are kept. Every attempt is logged in `~/.cache/shear_sim/episodes/`.
 - Writes locally only. Nothing goes to the Hub without K7's OK.
+- Domain randomisation, on by default (`randomize.py`, adapted from B.L.U.S.H; K7 2026-11-03). It varies:
+  - light brightness and direction, and the ambient light
+  - greenhouse, floor and pot shades
+  - leaf, stem and fruit colours, each inside its class, so a green leaf stays green and a ripe fruit red
+  - small camera pose jitter
+
+  The physics isn't randomised. `--no-dr` gives the plain look.
 - Not done yet:
-  - domain randomisation (light, colours, camera pose)
   - claw-camera labels for step 4 from these episodes
   - the task string is a draft: lock it before the real batch

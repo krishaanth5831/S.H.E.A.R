@@ -42,6 +42,7 @@ import arm_map
 import cutpose as cp
 import layout as lo
 import plant as pl
+import randomize
 import reach
 import rrt
 import scene as sc
@@ -83,10 +84,12 @@ HARD_CLASSES = {"stem": "stem", "pot": "pot", "rachis": "truss stalk", "pedicel"
 
 
 class Scene:
-    def __init__(self, seeds, turns=None, settle=True):
-        """settle=False skips the 3 s settle (generate_cuts.best_turns' quick search; the leaves then hang as built)."""
+    def __init__(self, seeds, turns=None, settle=True, domain_rand=False):
+        """settle=False skips the 3 s settle (generate_cuts.best_turns' quick search; the leaves then hang as built).
+        domain_rand: lighting, colours and camera poses drawn from the first seed (randomize.py), in self.dr."""
         self.seeds, self.turns = seeds, turns
         self.m, self.d, self.info = lo.build(seeds, bend=True, turns=turns)
+        self.dr = randomize.apply(self.m, seeds[0]) if domain_rand else None
         m, d = self.m, self.d
         self.arm_adr = np.array([m.joint("arm/" + j).qposadr[0] for j in cp.ARM5])
         self.act = np.array([m.actuator("arm/" + j).id for j in cp.ARM5])

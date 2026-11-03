@@ -21,7 +21,8 @@ Kept only if the judge passes the whole pass (every cut PASS, at least one cut, 
 pressing anything). Every attempt, kept or not and why, goes to a JSONL log in ~/.cache/shear_sim/episodes/.
 
 ⚠️ Writes ~/.cache/huggingface/lerobot/<repo-id> and the log. Never pushes to the Hub (K7 approves every push).
-No domain randomisation yet (light, colours, camera pose). Run in the lerobot env under the memory cap.
+Domain randomisation on by default (randomize.py: light, colours within class, camera poses; K7 2026-11-03);
+--no-dr for the plain look. Run in the lerobot env under systemd-run MemoryMax (not ulimit -v).
 """
 import argparse
 import json
@@ -117,6 +118,7 @@ def main():
     ap.add_argument("--repo-id", default=REPO_ID)
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--max-attempts", type=int, default=None, help="rows tried at most (default 12 per episode)")
+    ap.add_argument("--no-dr", action="store_true", help="no domain randomisation (the pilot's plain look)")
     a = ap.parse_args()
     if a.pilot:
         a.repo_id, n_eps = a.repo_id + "_pilot", a.episodes or PILOT_EPISODES
@@ -153,7 +155,8 @@ def main():
                     log.write(json.dumps(rec) + "\n"); log.flush()
                     print(f"row {seeds[0]}: skipped, no pot angle gives a clean cut", flush=True)
                     continue
-                scn = ct.Scene(seeds, turns=turns)
+                scn = ct.Scene(seeds, turns=turns, domain_rand=not a.no_dr)
+                rec["domain_rand"] = scn.dr
                 r = Recorder(ds, scn, build_dataset_frame, rop, tap)
                 res = ct.run_pass(scn, rng, r.frame)
                 r.close()
