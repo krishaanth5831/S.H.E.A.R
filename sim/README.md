@@ -238,6 +238,32 @@ What it found (2026-10-29):
     inner pair then cuts the rest as the jaw keeps closing (modelled in `plant.Cutter`, unverified).
   - From a fixed base, even with pots turned, only about 1 plant in 20 has a cut the arm can plan cleanly. The
     dwarf's trusses crowd the leaves.
+- **One episode is a full deleafing pass** (K7 2026-11-03). It starts and ends at the robot's start pose
+  (B.L.U.S.H's `START_NORM`), cuts the rule's leaves on p0, then p1, then p2, oldest first, each route planned
+  from where the arm is, and skips any leaf without a clean cut.
+  - Each pot is turned once beforehand, to the angle that lets the arm cut the most of that plant's leaves
+    (`generate_cuts.best_turns`). Even at the best angle that is about 1 leaf per plant on the dense dwarf, and
+    often none on p1 and p2 at the edge of the fixed arm's reach.
+  - `generate_cuts.py` videos carry the sim's labels on the birdseye and claw views. That is what the YOLO model
+    will learn; no model is trained yet.
+
+## Episode generation: the LeRobot dataset
+
+    python generate_episodes.py --pilot          5 episodes into krish5831/shear_sim_scripted_v0_pilot
+    python generate_episodes.py --episodes 200   the real batch into krish5831/shear_sim_scripted_v0 (--resume)
+
+Run under a real-memory fuse: `systemd-run --user --scope -q -p MemoryMax=20G -p MemorySwapMax=0 python ...`.
+⚠️ Not under `ulimit -v`: the lerobot import reserves so much address space that the EGL renderer then fails
+("Offscreen framebuffer is not complete").
+
+- Every frame is recorded the way `lerobot-record` does it, at 30 fps:
+  - `observation.state`: the 6 joints in use_degrees=false units, through the follower's calibration
+  - `action`: what the servos were told
+  - `observation.images.birdseye` / `.claw`: clean 640x480 frames
+  - `robot_type` `so_follower`, so sim and real SHEAR data can merge
+- Only passes the judge accepts are kept. Every attempt is logged in `~/.cache/shear_sim/episodes/`.
+- Writes locally only. Nothing goes to the Hub without K7's OK.
 - Not done yet:
-  - recording as a LeRobot dataset (a SHEAR robot plugin), after K7 approves the trial
+  - domain randomisation (light, colours, camera pose)
   - claw-camera labels for step 4 from these episodes
+  - the task string is a draft: lock it before the real batch
