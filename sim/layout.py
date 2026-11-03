@@ -101,11 +101,13 @@ def mast_xml():
     return "".join(g)
 
 
-def build(seeds=(11, 12, 13), arm=True, profile=sg.DEFAULT_PROFILE, leaf_scale=1.0, target=0, arm_xy=None, arm_yaw=ARM_YAW):
-    """arm_xy / arm_yaw: put the arm's base elsewhere (reach.py slides it along the aisle; default: in front of p0)."""
+def build(seeds=(11, 12, 13), arm=True, profile=sg.DEFAULT_PROFILE, leaf_scale=1.0, target=0, arm_xy=None, arm_yaw=ARM_YAW,
+          bend=False, turns=None):
+    """arm_xy / arm_yaw: put the arm's base elsewhere (reach.py slides it along the aisle; default: in front of p0).
+    bend: petioles that bend at the stem (stemgen.make_plant). turns: per plant, the pot turned about its stem (rad)."""
     specs, bodies, eqs, where, stems = [], [], [], {}, []
     for k, seed in enumerate(seeds):
-        spec = sg.make_plant(seed, profile, leaf_scale)
+        spec = sg.make_plant(seed, profile, leaf_scale, bend, turns[k] if turns else 0.0)
         xy = (PLANT_X[k], ROW_Y)
         b, e, w = sg.plant_xml(spec, xy=xy, pp=f"p{k}_")
         specs.append(spec); bodies.append(b); eqs.append(e); stems.append(xy)

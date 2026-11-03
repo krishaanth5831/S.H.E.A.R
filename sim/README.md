@@ -153,9 +153,11 @@ What it found (2026-10-29):
 
   | where the base is | leaves | rule's cuts | one blade pair, for comparison |
   |---|---|---|---|
-  | one base | 16 % | 16 % | 9 % / 13 % |
-  | base sliding ±15 cm along the aisle | 53 % | 65 % | 31 % / 29 % |
-  | sliding, plus the far side of the row | 66 % | 71 % | 58 % / 58 % |
+  | one base | 20 % | 23 % | 9 % / 13 % |
+  | base sliding ±15 cm along the aisle | 65 % | 71 % | 31 % / 29 % |
+  | sliding, plus the far side of the row | 71 % | 81 % | 58 % / 58 % |
+
+  (Rerun 2026-11-01 after the truss fix in step 5; before it, both pairs read 16/16, 53/65, 66/71 %.)
 
   What's left: twist (petioles pointing at or away from the arm), then truss stalks in the way.
 - The rig's leaflets pass through the hand: it tests the cut, not the approach. Approach paths, servo sag and
@@ -164,7 +166,7 @@ What it found (2026-10-29):
 ## Step 4 (started): cut-point labels for the vision model
 
     python check_labels.py                       PASS/FAIL checks on four rows, ~10 s
-    python check_labels.py --picture out.png     birdseye frames with the labels drawn on
+    python check_labels.py --picture out.png     each plant zoomed in, leaves numbered, one legend line per leaf
     python check_labels.py --windowed            the row with every cut point marked by the rule's decision
     python render_cutpoints.py --pilot 6         a PILOT set: 6 labelled frames into ~/.cache/shear_sim/cutpoints_pilot
 
@@ -179,6 +181,12 @@ What it found (2026-10-29):
 
   That is what `rule/select_leaves.py` needs (the node kinds, leaf health, truss stage, bottom-up order) and
   what `cutpose.py` needs.
+- Only leaves are cut, never trusses: the cut point is always where a leaf's petiole meets the stem, and only
+  leaves are ever targets (`cutpose.py`, `plant.Cutter`). A truss's keypoint only tells the rule where the
+  truss sits on the stem. ⚠️ The first preview drew truss keypoints as red dots, and a hidden leaf cut point sat
+  on top of the fruit hiding it, so cut points looked like they were on the trusses (K7, 2026-10-31). Previews
+  now draw leaves only, one plant per panel (`preview/*_leaves.png`). Check: 56 of 57 seen cut points lie within
+  3 px of their own petiole; the 85 hidden ones are behind fruit (29), a stem or another leaf.
 - Keypoint visibility comes from a depth render, not the segmentation alone. ⚠️ A cut point behind the stem
   projects onto the stem's front; the segmentation calls it seen, but it's hidden.
 - **Finding:** the birdseye sees only about a quarter of the rule's cut points (7 of 27 in the pilot). The low
@@ -187,3 +195,81 @@ What it found (2026-10-29):
 - Not done yet: claw-camera frames (from step 5's approach poses), domain randomisation, the dataset, training.
   `render_cutpoints.py` is capped at 24 frames until K7 approves the pilot.
 
+
+## Step 5 (started): the scripted cutter, routes planned with RRT
+
+    python check_cutter.py                       PASS/FAIL on one known plant, ~30 s
+    python check_cutter.py --windowed            watch that cut in real time (it loops)
+    python generate_cuts.py --trial 6            a TRIAL batch: 6 cut episodes as videos + summary,
+                                                 into ~/.cache/shear_sim/cuts_trial (capped at 12)
+
+- `rrt.py`: RRT-Connect in joint space, then shortcutting. K7 (2026-11-01): every arm move is planned with RRT.
+  It plans against three lists:
+  - **hard**: stems, pots, the frame. Never touched, 4 mm clearance.
+  - **soft**: fruit, truss stalks, and the stalks and midribs of kept leaves. Avoided when a route exists; when
+    none does, they may be brushed, and the episode says so. Leaflets just get pushed.
+  - **blade guard**: the blades never come within 2 mm of a truss stalk. A blade can cut a truss off; a finger
+    pad resting on it doesn't.
+- `cutter.py`, one episode:
+  1. hold at HOME (raised above the aisle), jaw opening 12 mm
+  2. RRT route to the pre-cut pose, 4 cm back along the fingers
+  3. straight slide onto the petiole
+  4. close: the blades cut
+  5. slide back out
+  6. a new RRT route home
+
+  IK (`cutpose.py`) gives the goal poses; RRT gives the routes. The servos follow a 30 Hz reference with an
+  integral sag correction, and the arm lands within ~0.2 mm.
+
+  The judge checks:
+  - the right leaf came off, and no other one did
+  - the stub is 1.5-3.5 mm
+  - no stem, pot or frame was pressed
+  - no truss stalk took more than 1 N
+  - no blade touched a truss stalk
+- `generate_cuts.py`: per episode, three random dwarf plants. The pot in front of the arm is turned so the
+  oldest leaf the rule cuts points along the row, as a person turns a pot on the bench. The base stays put (K7: no
+  sliding base, SPINE last).
+- Found on the way (2026-11-01):
+  - ⚠️ `stemgen` put every truss ~40 deg off the leaf below it instead of opposite it, so it drooped across the
+    cut point. Fixed. That changed every plant.
+  - ⚠️ The follower's shoulder goes to ±102 deg and the MJCF's to ±100. The IK now stays inside both.
+  - ⚠️ A petiole rising across the fingertips meets the outer blade pair first when the jaw is flipped. The
+    inner pair then cuts the rest as the jaw keeps closing (modelled in `plant.Cutter`, unverified).
+  - From a fixed base, even with pots turned, only about 1 plant in 20 has a cut the arm can plan cleanly. The
+    dwarf's trusses crowd the leaves.
+- **One episode is a full deleafing pass** (K7 2026-11-03). It starts and ends at the robot's start pose
+  (B.L.U.S.H's `START_NORM`), cuts the rule's leaves on p0, then p1, then p2, oldest first, each route planned
+  from where the arm is, and skips any leaf without a clean cut.
+  - Each pot is turned once beforehand, to the angle that lets the arm cut the most of that plant's leaves
+    (`generate_cuts.best_turns`). Even at the best angle that is about 1 leaf per plant on the dense dwarf, and
+    often none on p1 and p2 at the edge of the fixed arm's reach.
+  - `generate_cuts.py` videos carry the sim's labels on the birdseye and claw views. That is what the YOLO model
+    will learn; no model is trained yet.
+
+## Episode generation: the LeRobot dataset
+
+    python generate_episodes.py --pilot          5 episodes into krish5831/shear_sim_scripted_v0_pilot
+    python generate_episodes.py --episodes 200   the real batch into krish5831/shear_sim_scripted_v0 (--resume)
+
+Run under a real-memory fuse: `systemd-run --user --scope -q -p MemoryMax=20G -p MemorySwapMax=0 python ...`.
+⚠️ Not under `ulimit -v`: the lerobot import reserves so much address space that the EGL renderer then fails
+("Offscreen framebuffer is not complete").
+
+- Every frame is recorded the way `lerobot-record` does it, at 30 fps:
+  - `observation.state`: the 6 joints in use_degrees=false units, through the follower's calibration
+  - `action`: what the servos were told
+  - `observation.images.birdseye` / `.claw`: clean 640x480 frames
+  - `robot_type` `so_follower`, so sim and real SHEAR data can merge
+- Only passes the judge accepts are kept. Every attempt is logged in `~/.cache/shear_sim/episodes/`.
+- Writes locally only. Nothing goes to the Hub without K7's OK.
+- Domain randomisation, on by default (`randomize.py`, adapted from B.L.U.S.H; K7 2026-11-03). It varies:
+  - light brightness and direction, and the ambient light
+  - greenhouse, floor and pot shades
+  - leaf, stem and fruit colours, each inside its class, so a green leaf stays green and a ripe fruit red
+  - small camera pose jitter
+
+  The physics isn't randomised. `--no-dr` gives the plain look.
+- Not done yet:
+  - claw-camera labels for step 4 from these episodes
+  - the task string is a draft: lock it before the real batch

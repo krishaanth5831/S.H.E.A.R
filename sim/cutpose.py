@@ -95,14 +95,16 @@ def level(v):
 
 
 def follower_limits():
-    """Real follower's joint ranges (rad) for the 5 arm joints. ⚠️ Falls back to the MJCF's if the follower
-    calibration file isn't on this machine (it lives in ~/.cache/huggingface, from lerobot calibrate)."""
+    """The joint ranges (rad) both the real follower and the sim arm reach, for the 5 arm joints: the follower's
+    calibrated ranges cut to the MJCF's. ⚠️ The follower's shoulder_lift goes to +-102 deg, the MJCF's stops at
+    +-100: a cut planned at 102 deg left the sim arm 2.2 deg short, 4 mm at the blades (2026-11-01). Falls back to
+    the MJCF's alone if the follower calibration file isn't on this machine (~/.cache/huggingface)."""
+    m = mujoco.MjModel.from_xml_path(str(sc.SO101_XML))
+    r = np.array([m.joint(j).range for j in ARM5])
     try:
         lo_, hi_ = arm_map.FollowerMap().rad_limits()
-        return lo_[:5], hi_[:5], "follower_white.json"
+        return np.maximum(lo_[:5], r[:, 0]), np.minimum(hi_[:5], r[:, 1]), "follower_white.json within the MJCF ranges"
     except FileNotFoundError:
-        m = mujoco.MjModel.from_xml_path(str(sc.SO101_XML))
-        r = np.array([m.joint(j).range for j in ARM5])
         return r[:, 0], r[:, 1], "MJCF ranges (follower calibration missing)"
 
 
@@ -218,3 +220,37 @@ class CutIK:
                     mine[same[0]] = p
             out += mine
         return sorted(out, key=key)
+
+    def reach_pose(self, T, R_target, tool, x0, iters=100):
+        """Joint angles that put the gripper-frame point `tool` at world point T with the gripper turned to
+        R_target (its x and y axes; z follows), starting from x0. For the straight slide in and out of a cut,
+        where the gripper keeps the cut pose's orientation. Returns (q, position error m, angle error deg)."""
+        g = dict(T=np.asarray(T, float), Rt=np.asarray(R_target, float), tool=np.asarray(tool, float))
+
+        def res(x):
+            o, R = self.fk(x)
+            return np.r_[o + R @ g["tool"] - g["T"], 0.05 * (R[:, 0] - g["Rt"][:, 0]), 0.05 * (R[:, 1] - g["Rt"][:, 1])]
+
+        x = np.asarray(x0, float).copy()
+        e, lam = res(x), 1e-3
+        for _ in range(iters):
+            if np.linalg.norm(e) < 1e-6:
+                break
+            J = np.empty((len(e), 5))
+            for k in range(5):
+                dx = np.zeros(5)
+                dx[k] = 1e-6
+                J[:, k] = (res(x + dx) - e) / 1e-6
+            H, gr = J.T @ J, J.T @ e
+            xn = np.clip(x - np.linalg.solve(H + lam * np.diag(np.diag(H) + 1e-9), gr), self.lo, self.hi)
+            en = res(xn)
+            if np.linalg.norm(en) < np.linalg.norm(e):
+                x, e, lam = xn, en, max(lam / 3, 1e-9)
+            else:
+                lam *= 4
+                if lam > 1e6:
+                    break
+        o, R = self.fk(x)
+        ang = np.degrees(np.arccos(np.clip((np.trace(R.T @ g["Rt"]) - 1) / 2, -1, 1)))
+        return x, float(np.linalg.norm(o + R @ g["tool"] - g["T"])), float(ang)
+

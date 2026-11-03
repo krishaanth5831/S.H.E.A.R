@@ -344,11 +344,14 @@ class Cutter:
         m.geom_group[self.stub_geom] = 5
         d.eq_active[self.weld] = 1
         self.cut_t = self.stub = self.squeeze_at_cut = None
+        self.pending, self.second_cut = [], False
         self._over_t = [None] * len(self.pairs)
         self.squeezes = [0.0] * len(self.pairs)
         self.just_cut = False
         self.squeeze = self.pad_squeeze = self.stem_force = self.weld_force = 0.0
         self.peak = dict(squeeze=0.0, pad_squeeze=0.0, stem_force=0.0, weld_force=0.0)
+        self.peak_pairs = [0.0] * len(self.pairs)
+        self.peak_edges = {}
         self.blade_touch = False
 
     @property
@@ -379,6 +382,9 @@ class Cutter:
             else:
                 pad[self.pads[other]] += fn
         self.squeezes = [min(edge[f], edge[mv]) for f, mv in self.pairs]
+        self.peak_pairs = [max(p_, s_) for p_, s_ in zip(self.peak_pairs, self.squeezes)]
+        for b, fb in edge.items():
+            self.peak_edges[b] = max(self.peak_edges.get(b, 0.0), fb)
         self.squeeze, self.pad_squeeze, self.stem_force = max(self.squeezes), min(pad), stem
         self.weld_force = 0.0
         if self.attached:
@@ -388,6 +394,13 @@ class Cutter:
         for k in self.peak:
             self.peak[k] = max(self.peak[k], getattr(self, k))
         self.just_cut = False
+        if not self.attached and self.pending:
+            for k in self.pending:
+                if self._pair_shut(k):
+                    self.stub, self.second_cut = self._pair_stub(k), True
+                    self.pending = []
+                    self._draw_stub()
+                    break
         for k, sq in enumerate(self.squeezes):
             if not (self.attached and sq >= self.cut_force):
                 self._over_t[k] = None
@@ -397,17 +410,45 @@ class Cutter:
                 self._cut()
                 break
 
-    def _cut(self):
-        m, d, w = self.m, self.d, self.where
-        S, a = d.xpos[self.leaf], d.xmat[self.leaf].reshape(3, 3)[:, 0]
-        # the pair's two blades share one plane; the stub is the cut nearest the stem among the pairs pressing it
-        stubs = [float((np.mean([d.geom_xpos[f], d.geom_xpos[mv]], axis=0) - S) @ a - surface_dist(a, w["stem_r"]))
-                 for (f, mv), sq in zip(self.pairs, self.squeezes) if sq > 0]
-        self.stub = min(stubs)
-        self.cut_t, self.squeeze_at_cut, self.just_cut = d.time, self.squeeze, True
-        d.eq_active[self.weld] = 0
-        m.geom_contype[self.leaf_geoms], m.geom_conaffinity[self.leaf_geoms] = FALLEN_BITS
+    def _pair_stub(self, k):
+        """Distance along the petiole from the stem surface to where its axis crosses blade pair k's plane (both
+        blades share it; its normal is the jaw hinge). ⚠️ Projecting the blades' centres onto the petiole read
+        short: they sit off its axis along the closing direction, and a rising petiole turns that into length
+        (0.3 mm for a 2 mm cut, 2026-11-01)."""
+        d, w = self.d, self.where
+        S, a = self._S, self._a
+        f, mv = self.pairs[k]
+        n = d.xmat[self.gripper].reshape(3, 3)[:, 1]
+        P = np.mean([d.geom_xpos[f], d.geom_xpos[mv]], axis=0)
+        return float(((P - S) @ n) / (a @ n) - surface_dist(a, w["stem_r"]))
+
+    def _pair_shut(self, k):
+        """True once pair k's edges have met (blade centres one blade depth apart along the closing axis)."""
+        d = self.d
+        f, mv = self.pairs[k]
+        axis = d.xmat[self.gripper].reshape(3, 3)[:, 0]
+        return abs((d.geom_xpos[mv] - d.geom_xpos[f]) @ axis) <= 2 * self.m.geom_size[f][0] + 0.0005
+
+    def _draw_stub(self):
+        m, w = self.m, self.where
         length = w["r_s"] + max(self.stub, 0.0)
         m.geom_size[self.stub_geom][1] = length / 2
         m.geom_pos[self.stub_geom] = w["S_loc"] + w["a"] * length / 2
         m.geom_group[self.stub_geom] = 2
+
+    def _cut(self):
+        m, d, w = self.m, self.d, self.where
+        self._S, self._a = d.xpos[self.leaf].copy(), d.xmat[self.leaf].reshape(3, 3)[:, 0].copy()
+        # the stub is the cut nearest the stem among the pairs pressing it
+        stubs = {k: self._pair_stub(k) for k, sq in enumerate(self.squeezes) if sq > 0}
+        self.stub = min(stubs.values())
+        self.cut_t, self.squeeze_at_cut, self.just_cut = d.time, self.squeeze, True
+        # ⚠️ MODELLED: a pair further out can cut first (a petiole that rises across the fingertips meets the far
+        # pair first when the fixed jaw is on top, 2026-11-01). The real jaw keeps closing, and the pair nearer the
+        # stem then cuts the piece still held by the stem with the jaw's whole squeeze. The sim drops the leaf as
+        # one body, so step() counts that second cut when the nearer pair's edges meet.
+        here = min(stubs.values())
+        self.pending = [k for k in range(len(self.pairs)) if k not in stubs and 0 <= self._pair_stub(k) < here]
+        d.eq_active[self.weld] = 0
+        m.geom_contype[self.leaf_geoms], m.geom_conaffinity[self.leaf_geoms] = FALLEN_BITS
+        self._draw_stub()

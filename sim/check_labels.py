@@ -142,6 +142,8 @@ def run_checks():
 
 
 def draw(img, objs, scale=2):
+    """The whole frame: every box, and the leaves' cut points coloured by the rule. Crowded; draw_plants is the
+    readable one."""
     import cv2
     img = cv2.resize(np.ascontiguousarray(img[..., ::-1]), None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
     for o in objs:
@@ -149,7 +151,9 @@ def draw(img, objs, scale=2):
         x0, y0, x1, y1 = (np.array(o.box) * scale).astype(int)
         cv2.rectangle(img, (x0, y0), (x1 + scale - 1, y1 + scale - 1), col, 1)
         dec_bgr = {"cut": (30, 30, 255), "flag": (0, 150, 255), "guard": (255, 100, 50), "cap": (255, 100, 50)}
-        kcol = dec_bgr.get(o.decision, (255, 255, 255)) if o.cls.startswith("leaf") else col
+        if not o.cls.startswith("leaf"):
+            continue          # only leaves get dots: a truss's dot read as a cut point (K7, 2026-10-31)
+        kcol = dec_bgr.get(o.decision, (255, 255, 255))
         (u0, v0, s0), (u1, v1, s1) = o.kpts
         if s0 and s1:
             cv2.line(img, (int(u0 * scale), int(v0 * scale)), (int(u1 * scale), int(v1 * scale)), kcol, 1, cv2.LINE_AA)
@@ -161,6 +165,79 @@ def draw(img, objs, scale=2):
     return img[..., ::-1]
 
 
+DECISION_TEXT = {"cut": ("CUT", (0, 0, 230)), "flag": ("flag for a person", (0, 140, 255)),
+                 "guard": ("held back: plant needs its leaves", (210, 90, 0)),
+                 "cap": ("held back: max 3 per pass", (210, 90, 0)), "keep": ("keep", (120, 120, 120))}
+PANEL_H = 760           # px, each plant's zoomed panel
+LEGEND_W = 420
+
+
+def draw_plants(img, objs, n_plants=3):
+    """One zoomed panel per plant, leaves only: each leaf numbered from the bottom, its box, its cut point (filled
+    = the camera sees it, ring = hidden behind something), the petiole's direction, and a legend line per number."""
+    import cv2
+    base = np.ascontiguousarray(img[..., ::-1])
+    panels = []
+    for k in range(n_plants):
+        leaves = sorted((o for o in objs if o.plant == k and o.cls.startswith("leaf")), key=lambda o: o.node)
+        stem = [o for o in objs if o.plant == k and o.cls == "stem"]
+        boxes = np.array([o.box for o in leaves + stem]) if leaves or stem else None
+        if boxes is None:
+            continue
+        x0, y0 = boxes[:, :2].min(0) - 12
+        x1, y1 = boxes[:, 2:].max(0) + 12
+        x0, y0 = max(int(x0), 0), max(int(y0), 0)
+        x1, y1 = min(int(x1), base.shape[1] - 1), min(int(y1), base.shape[0] - 1)
+        sc_ = PANEL_H / (y1 - y0 + 1)
+        crop = cv2.resize(base[y0:y1 + 1, x0:x1 + 1], None, fx=sc_, fy=sc_, interpolation=cv2.INTER_LINEAR)
+        crop = (0.55 * crop + 0.45 * 255).astype(np.uint8)          # faded, so the marks stand out
+        canvas = np.full((PANEL_H + 50, crop.shape[1] + LEGEND_W, 3), 255, np.uint8)
+        canvas[50:50 + crop.shape[0], :crop.shape[1]] = crop
+        P = lambda u, v: (int((u - x0) * sc_), int((v - y0) * sc_) + 50)
+        n_cut = sum(o.decision == "cut" for o in leaves)
+        cv2.putText(canvas, f"plant {k + 1}: {len(leaves)} leaves in view, {n_cut} to cut", (8, 32),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.75, (20, 20, 20), 2, cv2.LINE_AA)
+        rows, last_y = [], 0
+        for n, o in enumerate(leaves, 1):
+            word, col = DECISION_TEXT.get(o.decision, ("keep", (120, 120, 120)))
+            bx0, by0 = P(o.box[0], o.box[1])
+            bx1, by1 = P(o.box[2] + 1, o.box[3] + 1)
+            cv2.rectangle(canvas, (bx0, by0), (bx1, by1), col, 2 if o.decision == "cut" else 1)
+            (u0, v0, s0), (u1, v1, s1) = o.kpts
+            if not s0:
+                continue
+            p0 = P(u0, v0)
+            if s0 == 2 and s1:
+                p1 = np.array(P(u1, v1))
+                tip = tuple((np.array(p0) + 2.5 * (p1 - np.array(p0))).astype(int))   # petiole direction, drawn long
+                cv2.arrowedLine(canvas, p0, tip, col, 3, cv2.LINE_AA, tipLength=0.3)
+            if s0 == 2:
+                cv2.circle(canvas, p0, 8, col, -1, cv2.LINE_AA)
+                cv2.circle(canvas, p0, 8, (0, 0, 0), 1, cv2.LINE_AA)
+            else:
+                cv2.circle(canvas, p0, 8, col, 2, cv2.LINE_AA)
+            cv2.putText(canvas, str(n), (p0[0] - 5, p0[1] - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2, cv2.LINE_AA)
+            rows.append((p0, n, word + ("" if s0 == 2 else " (cut point hidden)"), col))
+        # legend: one line per leaf, at the height of its cut point, pushed apart so they don't overlap
+        lx = crop.shape[1] + 30
+        for p0, n, text, col in sorted(rows, key=lambda r: r[0][1]):
+            y = max(p0[1], last_y + 26, 70)
+            last_y = y
+            cv2.line(canvas, (p0[0] + 9, p0[1]), (lx - 6, y - 5), col, 1, cv2.LINE_AA)
+            cv2.putText(canvas, f"{n}  {text}", (lx, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 1 if col == (120, 120, 120) else 2,
+                        cv2.LINE_AA)
+        panels.append(canvas)
+    sep = np.full((PANEL_H + 50, 6, 3), 200, np.uint8)
+    body = np.concatenate([x for p in panels for x in (p, sep)][:-1], 1)
+    head = np.full((70, body.shape[1], 3), 255, np.uint8)
+    for i, line in enumerate(("Each plant zoomed in, leaves only (numbered from the bottom). Dot = where the leaf stalk meets "
+                              "the stem = the cut point.",
+                              "Filled dot = the overview camera sees it; ring = hidden behind fruit, stem or another leaf. "
+                              "Arrow = the stalk's direction.")):
+        cv2.putText(head, line, (10, 28 + 28 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (20, 20, 20), 1, cv2.LINE_AA)
+    return np.concatenate([head, body], 0)[..., ::-1]
+
+
 def picture(path, rows=ROWS[:2]):
     from PIL import Image
     from cameras import SimCameras
@@ -169,11 +246,12 @@ def picture(path, rows=ROWS[:2]):
         m, d, info = settled_row(seeds)
         cams = SimCameras(m)
         objs = lb.label_frame(m, d, info, cams, "birdseye")
-        tiles.append(draw(cams.rgb(d, "birdseye"), objs))
+        tiles.append(draw_plants(cams.rgb(d, "birdseye"), objs))
         cams.close()
+    w = max(t.shape[1] for t in tiles)
+    tiles = [np.pad(t, ((0, 10), (0, w - t.shape[1]), (0, 0)), constant_values=255) for t in tiles]
     Image.fromarray(np.concatenate(tiles, 0)).save(path)
-    print(f"wrote {path}: boxes (green leaf, red truss, ochre scar, grey stem); dot = cut point, filled if the "
-          f"birdseye sees it, ring if hidden; colour = the rule: red cut, orange flag, blue held back, white keep")
+    print(f"wrote {path}: each plant zoomed, leaves numbered, a legend line per leaf")
 
 
 def windowed(seeds=ROWS[0]):
