@@ -39,5 +39,13 @@ case "${1:-}" in
     lerobot-train "${COMMON_NOPEFT[@]}" --batch_size="${BATCH:-8}" \
       --accelerator.gradient_accumulation.steps="${ACCUM:-4}" --steps="${STEPS:-40000}" --save_freq=4000 \
       --log_freq=50 --num_workers=8 --output_dir=$OUT/shear_smolvla_expert_v1 --job_name=shear_smolvla_expert_v1 ;;
-  *) echo "usage: $0 smoke | full | expert-smoke | expert   (full: LoRA, BATCH=16 STEPS=20000; expert: BATCH=8 ACCUM=4 STEPS=40000)"; exit 1 ;;
+  # v2 (2026-11-05): v1 continued on the dataset plus the 100 DAgger corrections (generate_corrections.py): the
+  # scripted cutter's take-overs from where v1 went wrong (0 of 51 cuts, pressed on the stem). Starts from v1's last
+  # checkpoint (the whole action expert again), half the steps: the policy already knows the reach.
+  expert-v2)
+    lerobot-train "${COMMON_NOPEFT[@]:1}" --policy.path="${FROM:-$OUT/shear_smolvla_expert_v1/checkpoints/040000/pretrained_model}" \
+      --batch_size="${BATCH:-8}" --accelerator.gradient_accumulation.steps="${ACCUM:-4}" --steps="${STEPS:-20000}" \
+      --save_freq=4000 --log_freq=50 --num_workers=8 --output_dir=$OUT/shear_smolvla_expert_v2 \
+      --job_name=shear_smolvla_expert_v2 ;;
+  *) echo "usage: $0 smoke | full | expert-smoke | expert | expert-v2   (full: LoRA, BATCH=16 STEPS=20000; expert: BATCH=8 ACCUM=4 STEPS=40000; expert-v2: from v1, STEPS=20000)"; exit 1 ;;
 esac
