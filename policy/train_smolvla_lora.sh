@@ -50,8 +50,9 @@ case "${1:-}" in
       --save_freq=4000 --log_freq=50 --num_workers=8 --output_dir=$OUT/shear_smolvla_expert_v2 \
       --job_name=shear_smolvla_expert_v2 ;;
   # v3 (K7 2026-11-06): the v1 rig's dataset (base camera + claw, generate_episodes.py REPO_ID v1), the action expert
-  # AND the vision encoder trained (--policy.freeze_vision_encoder=false; needs the local lerobot patch in
-  # smolvlm_with_expert.set_requires_grad, otherwise train_expert_only freezes the vision encoder too), the language
+  # AND the vision encoder trained (--policy.freeze_vision_encoder=false; needs policy/patch_lerobot_smolvla.py run once
+  # on the installed lerobot: otherwise train_expert_only freezes the vision encoder too, and the bf16 weights break
+  # --accelerator.mixed_precision=fp16), the language
   # layers frozen, 100k steps (K7's call; Dream Machines saw a plateau past 30k, so a checkpoint every 10k and the
   # pick is by rollout cuts, not loss). DATASET_V3 / RENAME_V3 override the dataset and its camera map (the smoke
   # ran on v0 before v1 existed: DATASET_V3=krish5831/shear_sim_scripted_v0 RENAME_V3="$RENAME_MAP").
