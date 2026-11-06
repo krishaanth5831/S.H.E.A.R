@@ -5,6 +5,8 @@
 #   policy/train_smolvla_lora.sh full     the LoRA run (v0)
 #   policy/train_smolvla_lora.sh expert   no LoRA: the whole action expert (v1); expert-smoke first
 # Run outside Claude Code's sandbox (the GPU isn't visible inside it), in the lerobot env.
+# v3 on Google Colab (T4, 16 GB) instead of the laptop: policy/colab_train_v3.ipynb (same recipe, checkpoints on the Hub,
+# resumes after a dead session). Open: https://colab.research.google.com/github/krishaanth5831/S.H.E.A.R/blob/dev/policy/colab_train_v3.ipynb
 set -euo pipefail
 cd "$(dirname "$0")/.."
 DATASET=krish5831/shear_sim_scripted_v0        # 200 passes, local + private on the Hub
