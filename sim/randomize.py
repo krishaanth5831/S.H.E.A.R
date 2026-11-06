@@ -35,6 +35,7 @@ PLANT_HSV = {"leaf": (0.020, (0.85, 1.15), (0.80, 1.20)),
              "stem": (0.020, (0.85, 1.15), (0.85, 1.15)),
              "fruit": (0.012, (0.85, 1.10), (0.80, 1.15))}
 BIRDSEYE_POS_M, BIRDSEYE_ROT_DEG = 0.010, 2.0   # mast placement by hand (B.L.U.S.H)
+BASE_POS_M, BASE_ROT_DEG = 0.004, 2.0           # printed bracket off the base plate (guess, as the claw mount)
 CLAW_POS_M, CLAW_ROT_DEG = 0.002, 1.5           # printed wrist mount (B.L.U.S.H)
 
 
@@ -97,7 +98,8 @@ def apply(m, seed):
             kv *= rng.uniform(0.95, 1.05)
         m.geom_rgba[i, :3] = _hsv(m.geom_rgba[i, :3], dh, ks, kv)
     p["colour"] = {k: [round(float(x), 3) for x in v] for k, v in draws.items()}
-    for name, dp, dr in (("birdseye", BIRDSEYE_POS_M, BIRDSEYE_ROT_DEG), ("arm/claw", CLAW_POS_M, CLAW_ROT_DEG)):
+    for name, dp, dr in (("birdseye", BIRDSEYE_POS_M, BIRDSEYE_ROT_DEG), ("base", BASE_POS_M, BASE_ROT_DEG),
+                         ("arm/claw", CLAW_POS_M, CLAW_ROT_DEG)):
         c = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_CAMERA, name)
         if c < 0:
             continue

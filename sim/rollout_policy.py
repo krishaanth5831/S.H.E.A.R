@@ -42,6 +42,7 @@ SEED_BASE = 980_000           # never used for the dataset (900000s) or the tria
 MAX_S = 60.0                  # the longest training episode was 49 s
 STILL_S = 1.5                 # back at the start pose this long (after leaving it) ends the episode
 START_TOL_NORM = 4.0          # "at the start pose": every arm joint within this, norm units
+SMOOTH = 0.0                  # set from --smooth
 LEFT_START_NORM = 15.0        # "has gone out": some arm joint this far from the start pose
 
 
@@ -167,6 +168,7 @@ def rollout(policy, pre, post, seeds, turns, video_path=None, viewer=None, drive
     video = gc.Video(sim.scn, video_path) if video_path else None
     live = viewer(sim) if viewer else None
     (driver or policy).reset()
+    prev = None                       # for --smooth
     gone_out, still, frames = False, 0, 0
     while sim.ep.t < MAX_S:
         if driver:
@@ -174,6 +176,11 @@ def rollout(policy, pre, post, seeds, turns, video_path=None, viewer=None, drive
         else:
             with torch.inference_mode():
                 a = post(policy.select_action(pre(sim.observation())))
+        if SMOOTH > 0:
+            # SockBot (walnut sensei, part 5): a first-order filter on the commands, alpha 0.5 cut the jitter to 38 %
+            # with little lag (0.3: 21 % but laggy). Here alpha is the weight of the NEW command.
+            a = a if prev is None else SMOOTH * a + (1.0 - SMOOTH) * prev
+            prev = a
         sim.act(a.reshape(-1).cpu().numpy())
         frames += 1
         sim.ep.done |= {key for key, c in sim.ep.cutters.items() if c.cut_t is not None}   # off the overlay
@@ -252,7 +259,11 @@ def main():
     ap.add_argument("--rtc", type=int, default=None, metavar="REINFER",
                     help="real-time chunking: a new chunk every REINFER moves, blended over the old one's rest")
     ap.add_argument("--rtc-horizon", type=int, default=20, help="old-chunk moves the new one is guided toward")
+    ap.add_argument("--smooth", type=float, default=0.0, metavar="ALPHA",
+                    help="first-order smoothing of the commands, ALPHA = weight of the new one (SockBot used 0.5); 0 = off")
     a = ap.parse_args()
+    global SMOOTH
+    SMOOTH = a.smooth
     ckpt = str(pathlib.Path(a.ckpt).resolve())
     tag = f"rtc{a.rtc}h{a.rtc_horizon}" if a.rtc else f"n{a.n_action_steps or 50}"
     out = a.out or pathlib.Path.home() / ".cache" / "shear_sim" / "rollouts" / f"{pathlib.Path(ckpt).parent.name}_{tag}"

@@ -122,6 +122,7 @@ def load():
     if MEASURED.exists():
         for c, v in json.loads(MEASURED.read_text()).items():
             out[c] = Lens(v["K"], v["D"], tuple(v.get("size", (W, H))), source=v.get("source", "measured"))
+    out.setdefault("base", out["birdseye"])      # the same InnoMaker camera, moved from the mast to the base bracket
     return out
 
 

@@ -41,11 +41,17 @@ import generate_cuts as gc  # noqa: E402
 
 # ⚠️ LOCK before the first real batch: changing it later makes earlier episodes a different task for the policy.
 TASK = "Cut the leaves below the lowest ripening truss off flush at the stem."
-REPO_ID = "krish5831/shear_sim_scripted_v0"
+# v1 (K7 2026-11-06): the v1 rig, base camera + claw, the arm's base 5 cm back (layout.py). v0 was birdseye + claw.
+REPO_ID = "krish5831/shear_sim_scripted_v1"
 PILOT_EPISODES = 5
+# Data mix (K7 2026-11-06, from the SockBot series: the policy must also see "don't reach"):
+HOLD_FRAC = 0.10             # at most this share of the batch: rows where the rule cuts NOTHING, the arm stays home
+HOLD_S = 4.0                 # seconds the arm holds the start pose in such an episode
+P0_ONLY_SKIP = 0.5           # rows with cuts on p0 only are skipped this often: v0 had 180 / 34 / 0 cuts on p0 / p1 / p2
+START_JITTER_DEG = 3.0       # the arm starts this far off its start pose (uniform per joint); it still ends exactly on it
 SEED_BASE = 900_000          # row attempt k uses seeds SEED_BASE + 3k .. +2 (apart from the trials' 700000s)
 LOG_DIR = pathlib.Path.home() / ".cache" / "shear_sim" / "episodes"
-CAMERAS = ("birdseye", "claw")
+from cameras import CAMERAS  # noqa: E402  ("base", "claw") since the v1 rig
 
 
 class Recorder:
@@ -136,6 +142,7 @@ def main():
         for p in LOG_DIR.glob(f"{a.repo_id.split('/')[-1]}_2*.jsonl"):
             done_rows |= {json.loads(ln).get("row") for ln in p.read_text().splitlines() if ln.strip()}
     kept, attempts, t_start = ds.meta.total_episodes if a.resume else 0, 0, time.time()
+    n_hold = 0
     max_attempts = a.max_attempts or 12 * n_eps
     with log_path.open("w") as log:
         try:
@@ -150,15 +157,27 @@ def main():
                 t0 = time.time()
                 rec = dict(row=seeds[0], seeds=seeds)
                 turns, found = gc.best_turns(seeds, rng)
-                if not any(found):
-                    rec.update(kept=False, why="no pot angle gives a clean cut")
+                rule_cuts = sum(len(ct.sg.label(ct.sg.make_plant(sd, bend=True)).cuts) for sd in seeds)
+                hold = rule_cuts == 0 and n_hold < HOLD_FRAC * n_eps
+                if not any(found) and not hold:
+                    rec.update(kept=False, why="no pot angle gives a clean cut" if rule_cuts else "the rule cuts nothing (hold quota full)")
                     log.write(json.dumps(rec) + "\n"); log.flush()
-                    print(f"row {seeds[0]}: skipped, no pot angle gives a clean cut", flush=True)
+                    print(f"row {seeds[0]}: skipped, {rec['why']}", flush=True)
+                    continue
+                if not hold and found[1] + found[2] == 0 and rng.random() < P0_ONLY_SKIP:
+                    rec.update(kept=False, why="balance: cuts on p0 only")
+                    log.write(json.dumps(rec) + "\n"); log.flush()
+                    print(f"row {seeds[0]}: skipped for balance (cuts on p0 only)", flush=True)
                     continue
                 scn = ct.Scene(seeds, turns=turns, domain_rand=not a.no_dr)
                 rec["domain_rand"] = scn.dr
                 r = Recorder(ds, scn, build_dataset_frame, rop, tap)
-                res = ct.run_pass(scn, rng, r.frame)
+                if hold:
+                    res = ct.hold_pass(scn, rng, r.frame, HOLD_S, START_JITTER_DEG)
+                    n_hold += 1
+                    rec["hold"] = True
+                else:
+                    res = ct.run_pass(scn, rng, r.frame, start_jitter_deg=START_JITTER_DEG)
                 r.close()
                 rec.update(pot_turns_deg=[round(float(np.degrees(t)) % 360, 1) for t in turns], frames=r.n,
                            n_cut=res["n_cut"], n_rule=res["n_rule"], cuts=res["cuts"], skipped=res["skipped"],

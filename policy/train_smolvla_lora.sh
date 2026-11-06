@@ -47,5 +47,23 @@ case "${1:-}" in
       --batch_size="${BATCH:-8}" --accelerator.gradient_accumulation.steps="${ACCUM:-4}" --steps="${STEPS:-20000}" \
       --save_freq=4000 --log_freq=50 --num_workers=8 --output_dir=$OUT/shear_smolvla_expert_v2 \
       --job_name=shear_smolvla_expert_v2 ;;
-  *) echo "usage: $0 smoke | full | expert-smoke | expert | expert-v2   (full: LoRA, BATCH=16 STEPS=20000; expert: BATCH=8 ACCUM=4 STEPS=40000; expert-v2: from v1, STEPS=20000)"; exit 1 ;;
+  # v3 (K7 2026-11-06): the v1 rig's dataset (base camera + claw, generate_episodes.py REPO_ID v1), the action expert
+  # AND the vision encoder trained (--policy.freeze_vision_encoder=false; needs the local lerobot patch in
+  # smolvlm_with_expert.set_requires_grad, otherwise train_expert_only freezes the vision encoder too), the language
+  # layers frozen, 100k steps (K7's call; Dream Machines saw a plateau past 30k, so a checkpoint every 10k and the
+  # pick is by rollout cuts, not loss). DATASET_V3 / RENAME_V3 override the dataset and its camera map (the smoke
+  # ran on v0 before v1 existed: DATASET_V3=krish5831/shear_sim_scripted_v0 RENAME_V3="$RENAME_MAP").
+  v3-smoke | v3)
+    RENAME_V1='{"observation.images.base": "observation.images.camera1", "observation.images.claw": "observation.images.camera2"}'
+    V3=(--policy.path=lerobot/smolvla_base --dataset.repo_id="${DATASET_V3:-krish5831/shear_sim_scripted_v1}"
+        --policy.device=cuda --policy.push_to_hub=false --rename_map="${RENAME_V3:-$RENAME_V1}" --wandb.enable=false
+        --policy.freeze_vision_encoder=false --batch_size="${BATCH:-4}" --accelerator.gradient_accumulation.steps="${ACCUM:-8}")
+    if [ "$1" = v3-smoke ]; then
+      lerobot-train "${V3[@]}" --steps=10 --save_freq=10 --log_freq=2 --num_workers=4 \
+        --output_dir=$OUT/shear_smolvla_v3_smoke --job_name=shear_smolvla_v3_smoke
+    else
+      lerobot-train "${V3[@]}" --steps="${STEPS:-100000}" --save_freq=10000 --log_freq=50 --num_workers=8 \
+        --output_dir=$OUT/shear_smolvla_v3 --job_name=shear_smolvla_v3
+    fi ;;
+  *) echo "usage: $0 smoke | full | expert-smoke | expert | expert-v2 | v3-smoke | v3   (full: LoRA, BATCH=16 STEPS=20000; expert: BATCH=8 ACCUM=4 STEPS=40000; expert-v2: from v1, STEPS=20000)"; exit 1 ;;
 esac
