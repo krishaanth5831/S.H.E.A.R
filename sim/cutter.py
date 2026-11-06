@@ -78,6 +78,15 @@ FORCE_LIMIT = {"stem": 0.5, "truss stalk": 1.0, "frame": 1.0, "pot": 1.0}   # N,
 FRUIT_PUSH_N = 2.0                # N on a fruit counts as a knock, logged (guess)
 STUB_OK = (0.0015, 0.0035)        # m, flush stub accepted
 SETTLE_S = 3.0
+HOME_CLEARANCE = 0.015            # m from stems / pots / frame on the route home (the planner's default is 4 mm)
+# Routes wait for the arm (K7 2026-11-06). ⚠️ A route home asked the shoulder to lift 70 deg in under 2 s; the servo
+# fell 40 deg behind under gravity, so the real arm swept low through p0's pot (300 N) and R1's floor rail (417 N)
+# while the command was already high and the planned path was clear (diag_home, row 700009). On a route the reference
+# now only advances while the arm is within LAG_MAX of it (a creep of 1/4 speed otherwise, so it never deadlocks);
+# the slide and the cut keep their timing (they are slow and tracked within 0.2 mm).
+LAG_MAX = np.radians(6.0)
+LAG_CREEP = 0.25
+LAG_STRETCH = 3.0                 # a route may take at most this many times its nominal duration
 
 HARD_CLASSES = {"stem": "stem", "pot": "pot", "rachis": "truss stalk", "pedicel": "truss stalk",
                 "calyx": "truss stalk", "fruit": "fruit"}
@@ -111,7 +120,10 @@ class Scene:
             if is_arm[g]:
                 continue
             c = sg.seg_class(n)
-            if n.startswith("gh_"):
+            if n.startswith("gh_") or n == "floor":
+                # ⚠️ The floor was not an obstacle until 2026-11-06: an RRT route home put the gripper pads 58 mm
+                # into it, the physics stopped the arm at the floor and dragged it into p0's pot (300 N) and R1's
+                # floor rail (417 N) while the planned path checked clear (row 700009, v1 rig trial).
                 self.cls[g] = "frame"
             elif c in HARD_CLASSES:
                 self.cls[g] = HARD_CLASSES[c]
@@ -312,11 +324,20 @@ class Episode:
     def q_now(self):
         return self.scn.d.qpos[self.scn.arm_adr].copy()
 
-    def play(self, name, dur, ref, jaw, watch=()):
+    def play(self, name, dur, ref, jaw, watch=(), wait_for_arm=False):
         scn, m, d = self.scn, self.scn.m, self.scn.d
         self.mon.phase = name
-        for f in range(max(1, round(dur * FPS))):
-            t = (f + 1) / FPS
+        frames = max(1, round(dur * FPS))
+        vt, q_ref = 0.0, ref(0.0)
+        for f in range(round(frames * LAG_STRETCH) if wait_for_arm else frames):
+            if wait_for_arm:
+                lag = np.abs(q_ref - self.q_now()).max()
+                vt += (1.0 if lag <= LAG_MAX else LAG_CREEP) / FPS
+                if vt >= dur + 0.5 / FPS and lag <= LAG_MAX:
+                    break
+                t = min(vt, dur)
+            else:
+                t = (f + 1) / FPS
             q_ref = ref(t)
             self.I = np.clip(self.I + SAG_KI * (q_ref - self.q_now()), -SAG_MAX, SAG_MAX)
             d.ctrl[scn.act] = q_ref + self.I
@@ -341,7 +362,7 @@ class Episode:
     def route(self, name, path, jaw_to):
         T, q = _timed(path)
         j0 = self.jaw
-        self.play(name, T, q, lambda t: j0 + (jaw_to - j0) * min(1.0, t / 0.5))
+        self.play(name, T, q, lambda t: j0 + (jaw_to - j0) * min(1.0, t / 0.5), wait_for_arm=True)
 
     def cut(self, plan):
         """One cut, judged on its own."""
@@ -402,7 +423,12 @@ class Episode:
         """An RRT route back to the start pose, planned on the plant as it stands now."""
         chk, _ = self.scn.checker("none_")
         q0 = self.q_now()
-        path = rrt.plan(chk, q0, self.scn.start, self.rng) or rrt.plan(chk, q0, self.scn.start, self.rng, soft=False)
+        # ⚠️ Going home needs to be close to nothing, so it gets a wide margin first: on the planner's 4 mm margin
+        # the servo lag closed the gap and a return route from a p1 cut pressed R1's floor rail with 280 N and p0's
+        # pot with 67 N (v1 rig trial ep_01, 2026-11-06). Then the normal margin, then through the kept leaves.
+        path = (rrt.plan(chk, q0, self.scn.start, self.rng, clearance=HOME_CLEARANCE)
+                or rrt.plan(chk, q0, self.scn.start, self.rng)
+                or rrt.plan(chk, q0, self.scn.start, self.rng, soft=False))
         if path is None:
             path = [q0, self.scn.start]
         self.mon.reset()
@@ -411,8 +437,32 @@ class Episode:
                     pressed=[k for k, lim in FORCE_LIMIT.items() if self.mon.peak[k] > lim])
 
 
-def run_pass(scn, rng, frame_cb=None, plants=(0, 1, 2)):
+def _jitter_start(scn, rng, deg):
+    """The arm a few degrees off its start pose (K7 2026-11-06, SockBot lesson: demos that all begin with the same
+    move teach "move", not "see the leaf, then move"). The pass still ends at the exact start pose."""
+    if deg:
+        q = scn.start + np.radians(rng.uniform(-deg, deg, 5))
+        scn.d.qpos[scn.arm_adr] = q
+        scn.d.ctrl[scn.act] = q
+        mujoco.mj_forward(scn.m, scn.d)
+
+
+def hold_pass(scn, rng, frame_cb=None, dur=4.0, start_jitter_deg=0.0):
+    """A pass where the rule cuts nothing on any plant: the arm looks and stays home (a "don't reach" episode)."""
+    _jitter_start(scn, rng, start_jitter_deg)
+    ep = Episode(scn, rng, frame_cb)
+    ep.hold("start", HOLD_S)
+    ep.hold("idle", dur)
+    ep.hold("end", HOLD_S)
+    return dict(verdict="PASS", cuts=[], skipped=[dict(plant=k, leaf=None, why="the rule cuts nothing on this plant")
+                                                  for k in range(len(scn.seeds))],
+                back_to_start=dict(route_points=0, peaks_n={k: 0.0 for k in FORCE_LIMIT}, pressed=[]),
+                n_cut=0, n_rule=0, seconds_sim=round(ep.t, 1), hold=True)
+
+
+def run_pass(scn, rng, frame_cb=None, plants=(0, 1, 2), start_jitter_deg=0.0):
     """One deleafing pass: start pose -> the rule's cuts on each plant in turn, oldest first -> start pose."""
+    _jitter_start(scn, rng, start_jitter_deg)
     ep = Episode(scn, rng, frame_cb)
     ep.hold("start", HOLD_S)
     cuts, skipped = [], []

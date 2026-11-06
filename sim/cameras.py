@@ -14,8 +14,10 @@ import numpy as np
 
 from lens import LENSES
 
-CAMERAS = ("birdseye", "claw")                         # same names as B.L.U.S.H, so the real rig matches
-CAM_IN_MODEL = {"birdseye": "birdseye", "claw": "arm/claw"}
+# v1 rig (K7 2026-11-06): the policy's cameras are the base camera + the claw. The birdseye (B.L.U.S.H's name, on the
+# mast) is still in the model for the label tools (labels.py, check_labels.py), but not recorded.
+CAMERAS = ("base", "claw")
+CAM_IN_MODEL = {"birdseye": "birdseye", "base": "base", "claw": "arm/claw"}
 
 
 def pinhole_size():

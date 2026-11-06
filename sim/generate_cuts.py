@@ -12,8 +12,8 @@ pot is turned once, to the angle that lets the arm cut the most of that plant's 
 base, SPINE comes last). ⚠️ Without the turn, 0 of 150 plants had a cut the fixed arm could plan (2026-11-01). A row where no cut
 can be planned at all is skipped, and why is logged.
 
-Written per episode: ep_KK.mp4, three views (the row from the side | birdseye | claw camera, the phase on top).
-The birdseye and claw views carry the labels overlay: each leaf's box and cut point, coloured by what the rule
+Written per episode: ep_KK.mp4, three views (the row from the side | base camera | claw camera, the phase on top;
+cameras.CAMERAS, the birdseye until the v1 rig of 2026-11-06). The camera views carry the labels overlay: each leaf's box and cut point, coloured by what the rule
 does with it (red cut, grey keep, blue held back, orange flag), the leaf being cut now in yellow. ⚠️ These are
 the SIM'S OWN LABELS (labels.py), what the YOLO-pose model will learn. No model is trained yet (no GPU), so it is
 not a detector's output. Plus summary.json and summary.txt.
@@ -34,6 +34,7 @@ import mujoco  # noqa: E402
 import numpy as np  # noqa: E402
 
 import cutter as ct  # noqa: E402
+from cameras import CAMERAS  # noqa: E402
 import labels as lb  # noqa: E402
 import layout as lo  # noqa: E402
 
@@ -61,7 +62,7 @@ def pot_turns(seeds, rng):
             turns.append(0.0)
             continue
         i = {nd.id: k for k, nd in enumerate(spec.nodes)}[sel.nodes[sel.cuts[0]].id]
-        reach_dir = np.arctan2(lo.ROW_Y - lo.AISLE_Y, lo.PLANT_X[k] - lo.ARM_X)     # base -> stem, seen from above
+        reach_dir = np.arctan2(lo.ROW_Y - lo.ARM_Y, lo.PLANT_X[k] - lo.ARM_X)     # base -> stem, seen from above
         side = reach_dir + rng.choice((np.pi / 2, -np.pi / 2))
         turns.append(float(side + np.radians(rng.uniform(-TURN_JITTER_DEG, TURN_JITTER_DEG)) - spec.azimuth[i]))
     return tuple(turns)
@@ -99,7 +100,7 @@ def best_turns(seeds, rng):
             continue
         by_id = {nd.id: i for i, nd in enumerate(spec.nodes)}
         az = np.array([spec.azimuth[by_id[sel.nodes[j].id]] for j in sel.cuts])
-        reach_dir = np.arctan2(lo.ROW_Y - lo.AISLE_Y, lo.PLANT_X[k] - lo.ARM_X)
+        reach_dir = np.arctan2(lo.ROW_Y - lo.ARM_Y, lo.PLANT_X[k] - lo.ARM_X)
         quick = []
         for deg in TURN_CANDIDATES_DEG:
             off = (az + np.radians(deg) - reach_dir) % np.pi - np.pi / 2       # 0 = square to the reach, either side
@@ -154,18 +155,18 @@ class Video:
         import cv2
         d = self.scn.d
         if self.k % LABEL_EVERY == 0:
-            for cam in ("birdseye", "claw"):
+            for cam in CAMERAS:
                 self.objs[cam] = lb.label_frame(self.scn.m, d, self.scn.info, self.cams, cam)
         self.k += 1
         self.r.update_scene(d, self.cam)
-        tiles = [self.r.render()] + [draw_overlay(self.cams.rgb(d, c), self.objs[c], ep) for c in ("birdseye", "claw")]
+        tiles = [self.r.render()] + [draw_overlay(self.cams.rgb(d, c), self.objs[c], ep) for c in CAMERAS]
         img = np.ascontiguousarray(np.concatenate(tiles, 1))
         bar = np.full((44, img.shape[1], 3), 255, np.uint8)
         now = ("" if ep.target is None else
                f"  leaf {self.scn.info['specs'][ep.target[0]].nodes[ep.target[1]].id[:3]} on plant {ep.target[0] + 1}")
         cv2.putText(bar, f"{phase:10s}{now}   {self.text}   cut so far: {len(ep.done)}", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.75, (20, 20, 20), 2, cv2.LINE_AA)
-        for k, label in enumerate(("side view", "birdseye camera", "claw camera")):
+        for k, label in enumerate(("side view",) + tuple(f"{c} camera" for c in CAMERAS)):
             cv2.putText(img, label, (10 + k * VIEW_W, VIEW_H - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2,
                         cv2.LINE_AA)
         self.w.append_data(np.concatenate([bar, img], 0))

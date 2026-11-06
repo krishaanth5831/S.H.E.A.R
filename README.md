@@ -23,3 +23,21 @@ behind the rule are in the Vinea vault, under `08 Modules/SHEAR/`.
 
 Work happens on `dev`. `main` is protected and only takes PRs from `dev`; the
 `only-dev-into-main` check enforces that.
+
+## Policy: SmolVLA + LoRA on the sim passes
+
+    policy/train_smolvla_lora.sh smoke     a few steps on the laptop GPU (memory and speed)
+    policy/train_smolvla_lora.sh full      batch 16, 20k steps (BATCH= / STEPS= to change)
+
+Fine-tunes `lerobot/smolvla_base` on `krish5831/shear_sim_scripted_v0` with LoRA (`lerobot-train --peft.*`,
+rank 32), into `outputs/train/shear_smolvla_lora_v0`.
+- ⚠️ SmolVLA's base expects camera1..3: birdseye -> camera1, claw -> camera2 (`RENAME_MAP`). A rollout has to
+  use the same map.
+- Run it outside Claude Code's sandbox: the GPU isn't visible inside it.
+
+    python sim/rollout_policy.py --ckpt outputs/train/shear_smolvla_lora_v0/checkpoints/last/pretrained_model --rows 10
+
+`rollout_policy.py` lets the trained policy drive the sim arm on rows it never saw (seeds 980000+), set up like the
+training episodes. It judges every cut against the rule (right, wrong, stub) and counts any pressing of stems, truss
+stalks, pots or the frame. The scripted cutter runs on the same rows for comparison. Videos and a summary go to
+`~/.cache/shear_sim/rollouts/<checkpoint>`.
