@@ -4,6 +4,7 @@
   python rollout_policy.py --ckpt ../outputs/train/shear_smolvla_lora_v0/checkpoints/last/pretrained_model --rows 10
   python rollout_policy.py ... --no-video
   python rollout_policy.py --ckpt ... --windowed        watch the policy drive live, row after row (real time)
+  python rollout_policy.py --ckpt ... --windowed --rows 1   one row live, then the window closes
 
 For each row (new seeds, never in the dataset: SEED_BASE), set up like the training episodes (generate_cuts.best_turns
 pots, domain randomisation), the policy drives the arm from the start pose at 30 fps: every frame it gets the joint
@@ -203,8 +204,9 @@ def rollout(policy, pre, post, seeds, turns, video_path=None, viewer=None, drive
     return res, sim
 
 
-def windowed(policy, pre, post, driver=None):
-    """Row after row in the MuJoCo viewer, at real time. Close the window (Ctrl+C on Wayland) to stop."""
+def windowed(policy, pre, post, driver=None, rows=None):
+    """Row after row in the MuJoCo viewer, at real time, `rows` of them (None = until the window is closed;
+    Ctrl+C on Wayland). Each row's window closes when its row ends."""
     import mujoco.viewer
     state = {}
 
@@ -229,8 +231,8 @@ def windowed(policy, pre, post, driver=None):
             return True
         return frame
 
-    k = 0
-    while not state.get("stop"):
+    k, shown = 0, 0
+    while not state.get("stop") and (rows is None or shown < rows):
         seeds = tuple(SEED_BASE + 3 * k + j for j in range(3))
         k += 1
         rng = np.random.default_rng(seeds[0])
@@ -242,6 +244,7 @@ def windowed(policy, pre, post, driver=None):
         print(f"row {seeds[0]}: the policy is driving, {how} "
               f"(new window per row; close it to stop)", flush=True)
         res, _ = rollout(policy, pre, post, seeds, turns, None, open_viewer, driver)
+        shown += 1
         print(f"  cut {res['cut_right']} right ({res['cut_clean']} clean) + {res['cut_wrong']} wrong of "
               f"{res['rule_cuts']} rule cuts; pressed {res['pressed'] or 'nothing'}", flush=True)
     return 0
@@ -250,7 +253,8 @@ def windowed(policy, pre, post, driver=None):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", required=True, help="a checkpoint's pretrained_model folder")
-    ap.add_argument("--rows", type=int, default=10)
+    ap.add_argument("--rows", type=int, default=None,
+                    help="rows to run (default 10; with --windowed, row after row until the window is closed)")
     ap.add_argument("--out", type=pathlib.Path, default=None)
     ap.add_argument("--no-video", action="store_true")
     ap.add_argument("--windowed", action="store_true", help="watch live in a MuJoCo window (no videos, no baseline)")
@@ -272,7 +276,8 @@ def main():
     print(f"n_action_steps {policy.config.n_action_steps}" + (f", RTC every {a.rtc} moves, horizon {a.rtc_horizon}"
                                                              if a.rtc else ""), flush=True)
     if a.windowed:                     # ⚠️ before touching --out: a live view must not delete a running batch's videos
-        return windowed(policy, pre, post, driver)
+        return windowed(policy, pre, post, driver, a.rows)
+    a.rows = a.rows or 10
     out.mkdir(parents=True, exist_ok=True)
     for f in list(out.glob("rollout_*.mp4")) + list(out.glob("rollouts.*")):     # only our own outputs
         f.unlink()
