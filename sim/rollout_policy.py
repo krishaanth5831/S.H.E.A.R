@@ -5,6 +5,7 @@
   python rollout_policy.py ... --no-video
   python rollout_policy.py --ckpt ... --windowed        watch the policy drive live, row after row (real time)
   python rollout_policy.py --ckpt ... --windowed --rows 1   one row live, then the window closes
+  python rollout_policy.py --ckpt ... --start 8 --rows 2 --out <same>   finish an interrupted 10-row test (rows 8-9)
 
 For each row (new seeds, never in the dataset: SEED_BASE), set up like the training episodes (generate_cuts.best_turns
 pots, domain randomisation), the policy drives the arm from the start pose at 30 fps: every frame it gets the joint
@@ -256,6 +257,8 @@ def main():
     ap.add_argument("--rows", type=int, default=None,
                     help="rows to run (default 10; with --windowed, row after row until the window is closed)")
     ap.add_argument("--out", type=pathlib.Path, default=None)
+    ap.add_argument("--start", type=int, default=0,
+                    help="skip the first N test rows: finishes an interrupted test, keeping its videos")
     ap.add_argument("--no-video", action="store_true")
     ap.add_argument("--windowed", action="store_true", help="watch live in a MuJoCo window (no videos, no baseline)")
     ap.add_argument("--n-action-steps", type=int, default=None,
@@ -279,20 +282,25 @@ def main():
         return windowed(policy, pre, post, driver, a.rows)
     a.rows = a.rows or 10
     out.mkdir(parents=True, exist_ok=True)
-    for f in list(out.glob("rollout_*.mp4")) + list(out.glob("rollouts.*")):     # only our own outputs
+    suffix = f"_from{a.start:02d}" if a.start else ""   # a resumed test keeps the first part's videos and summary
+    old = [f for f in out.glob("rollout_*.mp4") if int(f.stem.split("_")[1]) >= a.start]   # only our own outputs
+    for f in old + list(out.glob(f"rollouts{suffix}.*")):
         f.unlink()
     print(f"policy {ckpt}\nout {out}", flush=True)
-    rows = []
+    rows, skipped = [], 0
     k = 0
-    while len(rows) < a.rows and k < 30 * a.rows:
+    while len(rows) < a.rows and k < 30 * (a.rows + a.start):
         seeds = tuple(SEED_BASE + 3 * k + j for j in range(3))
         k += 1
         rng = np.random.default_rng(seeds[0])
         turns, found = gc.best_turns(seeds, rng)
         if not any(found):
             continue                                   # the scripted cutter can't do anything here either
+        if skipped < a.start:
+            skipped += 1
+            continue
         t0 = time.time()
-        n = len(rows)
+        n = a.start + len(rows)
         res, sim = rollout(policy, pre, post, seeds, turns, None if a.no_video else out / f"rollout_{n:02d}.mp4",
                            driver=driver)
         base = ct.run_pass(ct.Scene(seeds, turns=turns, domain_rand=True), np.random.default_rng(seeds[0]))
@@ -310,12 +318,12 @@ def main():
              f"cuts, {damaged} rollouts pressed something it mustn't; scripted cutter on the same rows: "
              f"{tot['scripted_cut']} cuts; the rule asked for {tot['rule_cuts']}",
              f"back at the start pose: {sum(r['back_at_start'] for r in rows)} of {len(rows)}", ""]
-    for i, r in enumerate(rows):
+    for i, r in enumerate(rows, start=a.start):
         lines.append(f"rollout_{i:02d}.mp4  row {r['row']}: right {r['cut_right']} (stubs {r['stubs_mm']}), wrong "
                      f"{r['cut_wrong']} {r['wrong']}, scripted {r['scripted_cut']}, pressed {r['pressed'] or '-'}, "
                      f"{r['seconds']} s")
-    (out / "rollouts.json").write_text(json.dumps(dict(ckpt=ckpt, rows=rows, totals=tot), indent=1, default=str))
-    (out / "rollouts.txt").write_text("\n".join(lines) + "\n")
+    (out / f"rollouts{suffix}.json").write_text(json.dumps(dict(ckpt=ckpt, rows=rows, totals=tot), indent=1, default=str))
+    (out / f"rollouts{suffix}.txt").write_text("\n".join(lines) + "\n")
     print("\n" + "\n".join(lines))
     return 0
 
