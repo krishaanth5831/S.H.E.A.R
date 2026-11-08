@@ -1,0 +1,9 @@
+# Lint settings for the whole repo: `ruff check .` (ruff is in the lerobot env).
+line-length = 120
+
+[lint]
+select = ["E", "F", "W", "B", "I"]
+ignore = [
+    "E731",   # named lambdas are used on purpose for short reference curves (cutter.py play/route)
+    "B905",   # zip(strict=...) would raise where the code relies on the shorter sequence
+]
