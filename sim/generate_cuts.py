@@ -9,12 +9,13 @@ One episode = one pass along a new row of three random dwarf plants: from the ro
 rule cuts on p0, then p1, then p2, oldest first, then back to the start pose (K7 2026-11-03). Before the pass each
 pot is turned once, to the angle that lets the arm cut the most of that plant's rule cuts (best_turns, K7's pick
 2026-11-03), the way a person sets potted plants on the bench; the arm's base stays put (K7 2026-10-31: no sliding
-base, SPINE comes last). ⚠️ Without the turn, 0 of 150 plants had a cut the fixed arm could plan (2026-11-01). A row where no cut
-can be planned at all is skipped, and why is logged.
+base, SPINE comes last). ⚠️ Without the turn, 0 of 150 plants had a cut the fixed arm could plan (2026-11-01). A
+row where no cut can be planned at all is skipped, and why is logged.
 
 Written per episode: ep_KK.mp4, three views (the row from the side | base camera | claw camera, the phase on top;
-cameras.CAMERAS, the birdseye until the v1 rig of 2026-11-06). The camera views carry the labels overlay: each leaf's box and cut point, coloured by what the rule
-does with it (red cut, grey keep, blue held back, orange flag), the leaf being cut now in yellow. ⚠️ These are
+cameras.CAMERAS, the birdseye until the v1 rig of 2026-11-06). The camera views carry the labels overlay: each
+leaf's box and cut point, coloured by what the rule does with it (red cut, grey keep, blue held back, orange flag),
+the leaf being cut now in yellow. ⚠️ These are
 the SIM'S OWN LABELS (labels.py), what the YOLO-pose model will learn. No model is trained yet (no GPU), so it is
 not a detector's output. Plus summary.json and summary.txt.
 
@@ -34,9 +35,9 @@ import mujoco  # noqa: E402
 import numpy as np  # noqa: E402
 
 import cutter as ct  # noqa: E402
-from cameras import CAMERAS  # noqa: E402
 import labels as lb  # noqa: E402
 import layout as lo  # noqa: E402
+from cameras import CAMERAS  # noqa: E402
 
 TRIAL_MAX = 12
 DEFAULT_OUT = pathlib.Path.home() / ".cache" / "shear_sim" / "cuts_trial"
@@ -53,7 +54,7 @@ def pot_turns(seeds, rng):
     """Per plant, the turn (rad) that points its oldest leaf to cut across the arm's reach (square to the line from
     the arm's base to that stem, left or right); 0 if the rule cuts nothing. For p0, in front of the arm, that's
     along the row. ⚠️ Turned along the row instead, p1 and p2 (off to the side) never had a clean flush pose
-    (2026-11-03)."""
+    (2026-11-03). Superseded by best_turns for the passes; check_cutter.py still sets its known plant with it."""
     turns = []
     for k, s in enumerate(seeds):
         spec = ct.sg.make_plant(s, bend=True)
@@ -72,7 +73,8 @@ TURN_CANDIDATES_DEG = tuple(range(0, 360, 30))     # pot angles tried per plant 
 
 
 def cuttable(scn, rng, k):
-    """How many of the rule's cuts on plant k can be cut cleanly as the plant stands (no route: that's planned later)."""
+    """How many of the rule's cuts on plant k can be cut cleanly as the plant stands (no route: that's planned
+    later)."""
     spec = scn.info["specs"][k]
     sel = ct.sg.label(spec)
     by_id = {nd.id: i for i, nd in enumerate(spec.nodes)}
@@ -80,7 +82,7 @@ def cuttable(scn, rng, k):
                for j in sel.cuts)
 
 
-ACROSS_DEG = 25.0             # a leaf within this of square to the arm's reach counts in the quick score (cutpose twist)
+ACROSS_DEG = 25.0             # a leaf within this of square to the reach counts in the quick score (cutpose twist)
 TOP_TURNS = 3                 # candidate angles checked in full (settled plant, every cut planned)
 
 
@@ -141,6 +143,7 @@ def draw_overlay(img, objs, ep):
 class Video:
     def __init__(self, scn, path):
         import imageio
+
         from cameras import SimCameras
         self.scn, self.cams = scn, SimCameras(scn.m)
         self.r = mujoco.Renderer(scn.m, VIEW_H, VIEW_W)
@@ -230,7 +233,8 @@ def main():
         episodes.append(res)
         print(f"episode {n} (row {seeds[0]}): {res['verdict']}, {res['n_cut']}/{res['n_rule']} rule cuts done, "
               f"{len(res['skipped'])} skipped [{res['seconds']} s]", flush=True)
-    (a.out / "summary.json").write_text(json.dumps(dict(episodes=episodes, skipped_rows=skipped), indent=1, default=str))
+    (a.out / "summary.json").write_text(json.dumps(dict(episodes=episodes, skipped_rows=skipped), indent=1,
+                                                   default=str))
     lines = [f"{len(episodes)} episodes (passes over 3 plants); {len(skipped)} rows skipped (nothing plannable)", ""]
     for e in episodes:
         lines.append(f"ep_{e['episode']:02d}.mp4  {e['verdict']}  {e['n_cut']} of the rule's {e['n_rule']} cuts, "

@@ -1,6 +1,6 @@
 """Reach survey (step 3, kinematic): which leaves on the greenhouse's dwarf plants the SO-101 can cut flush.
 
-    python check_approach.py --reach            the survey (about a minute), PASS/FAIL on its own sanity
+    python check_approach.py --reach            the survey (~6 min), PASS/FAIL on its own sanity
 
 For every present leaf on the plant in front of the arm (p0), over many random plants, cutpose.CutIK looks for a
 flush cut pose, from:
@@ -14,8 +14,8 @@ fingertips (LEAN_OK, PITCH_OK, TWIST_OK below), and the arm at that pose doesn't
 pot or the greenhouse frame (leaves give way, so they don't count; the target's own petiole runs between the
 jaws). Fruit may be pushed up to FRUIT_PUSH_OK. Kinematic only: no approach path, no servo sag. Those are step 5's.
 """
-import numpy as np
 import mujoco
+import numpy as np
 
 import cutpose as cp
 import layout as lo
@@ -25,7 +25,7 @@ import stemgen as sg
 LEAN_OK = 2.0             # deg. ⚠️ 5 deg of lean already put the moving pad into the stem
 PITCH_OK = (-22.0, 10.0)  # deg, fingers off level: -22..+10 cut clean, +52 put the fixed finger along the stem
 TWIST_OK = 30.0           # deg: 25 deg cut a 2.1-3.5 mm stub; 55 deg cut but left 4-9 mm
-OFFSET = 0.002            # the stub asked for
+OFFSET = 0.002            # m, the stub asked for (2 mm: the closest clean flush cut)
 OVERLAP_OK = 0.0005       # m, as check_approach.BLOCK_PEN
 # Fruit hang on sprung pedicels and give way, as a hand reaching into a truss pushes them: B.L.U.S.H lets the
 # open fingers press a neighbour by up to 15 mm in its kinematic sweep (expert.NEIGHBOUR_PUSH_M, commit cec86fb).
@@ -119,13 +119,13 @@ def survey_base(seed, arm_xy, arm_yaw, frame=True):
 
 
 def survey():
-    fails = 0
     yaw_far = -np.pi / 2
     far_y = lo.ROW_Y + (lo.ROW_Y - lo.AISLE_Y)          # mirror of the aisle across the row
     sx = lo.PLANT_X[0]
     print(f"{len(SEEDS)} dwarf plants in front of the arm (seeds {SEEDS.start}-{SEEDS.stop - 1}); clean = lean <= "
           f"{LEAN_OK:.0f}, finger pitch {PITCH_OK[0]:+.0f}..{PITCH_OK[1]:+.0f}, twist <= {TWIST_OK:.0f} deg "
-          f"(check_approach.py) and the arm clear of stem, trusses, pot and frame. Stub {OFFSET * 1000:.0f} mm.\n", flush=True)
+          f"(check_approach.py) and the arm clear of stem, trusses, pot and frame. Stub {OFFSET * 1000:.0f} mm.\n",
+          flush=True)
     bases = [(f"aisle {dx:+.2f} m", (sx + dx, lo.AISLE_Y), lo.ARM_YAW, True) for dx in BASE_SHIFTS]
     bases += [(f"far side {dx:+.2f} m", (sx + dx, far_y), yaw_far, False) for dx in (-0.10, 0.0, 0.10)]
     table = {}
@@ -147,7 +147,8 @@ def survey():
             if v != "ok":
                 why[v] = why.get(v, 0) + 1
         why_s = ", ".join(f"{v} {n}" for v, n in sorted(why.items(), key=lambda t: -t[1]))
-        print(f"{name:18s} {ok_all:5d} ({100 * ok_all / len(leaves):3.0f}%) {ok_rule:4d} ({100 * ok_rule / max(len(rule), 1):3.0f}%)   {why_s}")
+        print(f"{name:18s} {ok_all:5d} ({100 * ok_all / len(leaves):3.0f}%) "
+              f"{ok_rule:4d} ({100 * ok_rule / max(len(rule), 1):3.0f}%)   {why_s}")
     print()
     combos = (("one base (today's layout)", ["aisle +0.00 m"]),
               ("base slides along the aisle", [b[0] for b in bases if b[0].startswith("aisle")]),
@@ -160,5 +161,4 @@ def survey():
               f"{ok_rule}/{len(rule)} rule cuts ({100 * ok_rule / max(len(rule), 1):.0f}%) cut flush and clean")
     sane = len(leaves) > 100 and any(table[k]["aisle +0.00 m"].startswith("ok") for k in leaves)
     print(("PASS" if sane else "FAIL") + f" the survey ran on {len(leaves)} leaves and found clean cuts")
-    fails += not sane
-    return 1 if fails else 0
+    return 0 if sane else 1

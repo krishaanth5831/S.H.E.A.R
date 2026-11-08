@@ -11,6 +11,8 @@ Changed from B.L.U.S.H:
 - No Detacher and no break force: SHEAR doesn't pick. The tether weld stays on.
 - The ripeness per fruit comes from the truss stage (stemgen.py), not a random draw.
 - truss_xml takes the fruit radius range, so a dwarf cherry's smaller fruit fit (stemgen profiles).
+- B.L.U.S.H leftovers SHEAR never used are gone: the per-fruit gate threshold, the `avoid` list and random
+  ripeness in truss_xml, and single_xml's RACHIS_LEVER_M.
 """
 import numpy as np
 
@@ -43,19 +45,18 @@ PEDICEL_SWING_DEG = 25.0      # +- turn of the lean direction around the vertica
 HANG_TILT_DEG = (0.0, 35.0)
 # Calyx: 5 sepals lying on the fruit around the pedicel. Visual only (no collision, no mass), so the
 # grasp physics is the same as the bare sphere; it gives the fruit a visible orientation and looks
-# more like the photos the gate learned from. Sizes are a guess from supermarket vine tomatoes.
+# more like the photos B.L.U.S.H's ripeness gate learned from. Sizes are a guess from supermarket vine tomatoes.
 CALYX_SEPALS = 5
 CALYX_SPREAD_DEG = 42.0       # sepal tip, measured from the calyx centre over the fruit surface
 CALYX_RGBA = "0.22 0.38 0.12 1"
 
 # The truss stem (rachis) hangs off the vine on a sprung ball joint, so a truss sways when the
 # gripper drags a fruit. Rigid, it pushed all of a closing jaw's ~8 mm drag into the tether and
-# plucked the weakest fruit (check_scene.py). 0.3 N.m/rad = ~10 deg of sag for a 10-fruit truss on an
+# plucked the weakest fruit (B.L.U.S.H check_scene.py). 0.3 N.m/rad = ~10 deg of sag for a 10-fruit truss on an
 # 8 cm rachis: guess, unverified (push a real truss with a scale and measure the sway).
 RACHIS_STIFFNESS = 0.3        # N.m/rad
 RACHIS_DAMPING = 0.01         # N.m.s/rad, guess: settles in ~1 s
 RACHIS_ARMATURE = 1e-4        # ⚠️ the 2 mm rachis capsule is nearly massless; without this the joint jitters
-RACHIS_LEVER_M = 0.08         # single_xml's stand-in truss length
 
 # Weld softness = the tether spring. (timeconst, dampratio) in MuJoCo solref. 20 ms is MuJoCo's
 # default: stiff enough that a hanging fruit moves < 1 mm. (unverified against a real pedicel)
@@ -64,7 +65,7 @@ TETHER_SOLREF = (0.02, 1.0)
 # Gap kept between neighbouring fruits when they're laid out (guess; real trusses touch sometimes).
 FRUIT_GAP_M = 0.002
 
-# Ripeness colours, rough sRGB of the classes the gate knows (guess from photos, unverified).
+# Ripeness colours, rough sRGB of the classes B.L.U.S.H's ripeness gate knows (guess from photos, unverified).
 RIPENESS_RGBA = {
     "green":   (0.35, 0.55, 0.20, 1),
     "turning": (0.85, 0.55, 0.20, 1),
@@ -88,12 +89,13 @@ def _calyx(name, r, up, spin):
     for k in range(CALYX_SEPALS):
         th = spin + 2 * np.pi * k / CALYX_SEPALS
         tipp = (np.cos(sp) * up + np.sin(sp) * (np.cos(th) * e1 + np.sin(th) * e2)) * r * 1.04
-        out.append(f'<geom name="{name}_calyx{k}" type="capsule" fromto="{c0[0]:.5f} {c0[1]:.5f} {c0[2]:.5f} {tipp[0]:.5f} {tipp[1]:.5f} '
-                   f'{tipp[2]:.5f}" size="0.0011" density="0" rgba="{CALYX_RGBA}" contype="0" conaffinity="0"/>')
+        out.append(f'<geom name="{name}_calyx{k}" type="capsule" '
+                   f'fromto="{c0[0]:.5f} {c0[1]:.5f} {c0[2]:.5f} {tipp[0]:.5f} {tipp[1]:.5f} {tipp[2]:.5f}" '
+                   f'size="0.0011" density="0" rgba="{CALYX_RGBA}" contype="0" conaffinity="0"/>')
     return "".join(out)
 
 
-def _fruit(name, local, world, tip, r, rip, threshold, hang=(0.0, 0.0, -1.0), spin=0.0):
+def _fruit(name, local, world, tip, r, rip, hang=(0.0, 0.0, -1.0), spin=0.0):
     """Pedicel body (local pos in its parent), tomato body (world), weld, info dict.
     hang: unit direction from the pedicel tip to the fruit centre (straight down by default)."""
     tn, pn = f"{name}", f"{name}_ped"
@@ -112,16 +114,15 @@ def _fruit(name, local, world, tip, r, rip, threshold, hang=(0.0, 0.0, -1.0), sp
     eq = (f'<weld name="{tn}_tether" body1="{tn}" body2="{pn}" '
           f'solref="{TETHER_SOLREF[0]} {TETHER_SOLREF[1]}"/>')
     return ped, body, eq, dict(tomato=tn, pedicel=pn, eq=f"{tn}_tether", geom=f"{tn}_g", radius=r,
-                               ripeness=rip, threshold=threshold, pos=c)
+                               ripeness=rip, pos=c)
 
 
-def truss_xml(name, rachis_from, rachis_to, n, rng, ripeness=None, avoid=(), radius=None):
-    """MJCF for one truss: a static rachis capsule with up to n tomatoes hanging off it.
+def truss_xml(name, rachis_from, rachis_to, n, rng, ripeness, radius=None):
+    """MJCF for one truss: a rachis capsule on a sprung ball joint with up to n tomatoes hanging off it.
 
-    rachis_from/to: world points (m) of the truss stem. ripeness: list of RIPENESS_RGBA keys (len
-    n), random if None. avoid: (centre, radius) of fruits already placed elsewhere. A fruit that
-    would overlap a neighbour gets a smaller radius, then is dropped, so a truss can come out
-    with fewer than n tomatoes.
+    rachis_from/to: world points (m) of the truss stem. ripeness: list of RIPENESS_RGBA keys (len n).
+    radius: (min, max) fruit radius (default RADIUS_M). A fruit that would overlap a neighbour gets a smaller
+    radius, then is dropped, so a truss can come out with fewer than n tomatoes.
     Returns (rachis_body_xml, tomato_bodies_xml, equality_xml, fruit_info_list).
     """
     a, b = np.asarray(rachis_from, float), np.asarray(rachis_to, float)
@@ -129,7 +130,7 @@ def truss_xml(name, rachis_from, rachis_to, n, rng, ripeness=None, avoid=(), rad
     L = np.linalg.norm(axis)
     out = np.cross(axis / L, [0, 0, 1])
     out = out / np.linalg.norm(out) if np.linalg.norm(out) > 1e-6 else np.array([1.0, 0, 0])
-    placed = list(avoid)
+    placed = []
     peds, bodies, eqs, fruit = [], [], [], []
     for i in range(n):
         p_world = a + (i + 0.5) / n * axis
@@ -142,7 +143,7 @@ def truss_xml(name, rachis_from, rachis_to, n, rng, ripeness=None, avoid=(), rad
         tilt, az = np.radians(rng.uniform(*HANG_TILT_DEG)), rng.uniform(0, 2 * np.pi)
         hang = np.array([np.sin(tilt) * np.cos(az), np.sin(tilt) * np.sin(az), -np.cos(tilt)])
         spin = rng.uniform(0, 2 * np.pi)
-        rip = ripeness[i] if ripeness else str(rng.choice(list(RIPENESS_RGBA)))
+        rip = ripeness[i]
         r = rng.uniform(*(radius or RADIUS_M))
         for _ in range(4):
             c = p_world + tip + hang * r
@@ -153,11 +154,13 @@ def truss_xml(name, rachis_from, rachis_to, n, rng, ripeness=None, avoid=(), rad
             continue
         if r < (radius or RADIUS_M)[0] * 0.8:
             continue
-        ped, body, eq, info = _fruit(f"{name}_t{i}", p_world - mid, p_world, tip, r, rip,
-                                     0.0, hang=hang, spin=spin)
+        ped, body, eq, info = _fruit(f"{name}_t{i}", p_world - mid, p_world, tip, r, rip, hang=hang, spin=spin)
         info["truss"] = name
         placed.append((info["pos"], r))
-        peds.append(ped); bodies.append(body); eqs.append(eq); fruit.append(info)
+        peds.append(ped)
+        bodies.append(body)
+        eqs.append(eq)
+        fruit.append(info)
     rachis = (f'<body name="{name}_rachis" pos="{mid[0]:.5f} {mid[1]:.5f} {mid[2]:.5f}">'
               f'<joint name="{name}_rachis_ball" type="ball" pos="{-axis[0]/2:.5f} {-axis[1]/2:.5f} {-axis[2]/2:.5f}" '
               f'stiffness="{RACHIS_STIFFNESS}" damping="{RACHIS_DAMPING}" armature="{RACHIS_ARMATURE}"/>'

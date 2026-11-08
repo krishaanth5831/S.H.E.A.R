@@ -2,6 +2,9 @@
 
 Copied unchanged from B.L.U.S.H sim/arm_map.py (commit 5c12eea). SHEAR uses it for the real follower's joint
 limits (rad_limits): the cut-pose IK (cutpose.py) must stay inside what the real arm reaches, not the MJCF ranges.
+And for the dataset's units: the start pose (cutter.py), observation.state and action (generate_episodes.py), and
+the policy's actions back to joint angles (rollout_policy.py, check_replay.py). ⚠️ meta() is never called in SHEAR:
+its datasets don't store the calibration hash the sha256 comment below promises.
 
 Real teleop with use_degrees=false: the leader sends range-normalised values (arm joints -100..100,
 gripper 0..100). The follower turns them into servo ticks through ITS OWN calibration
@@ -18,7 +21,7 @@ the joint range"). so101-il-dev-toolkit drives a MuJoCo follower with this formu
 all five arm joints.
 
 SIGN = +1 on every joint and these zeros were checked on our arms by K7 (2026-10-20): with
-`sim/scripts/teleop_sim.sh` every leader joint moved the sim joint the same way, and 3 poses
+B.L.U.S.H's `sim/scripts/teleop_sim.sh` every leader joint moved the sim joint the same way, and 3 poses
 matched the real follower by eye. (The real follower's wrist_flex trails the leader by a few ticks,
 its own calibration; accepted.)
 """

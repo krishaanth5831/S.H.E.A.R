@@ -2,27 +2,36 @@
 """Correction episodes for the SHEAR policy: sim DAgger, the scripted cutter as the person who steps in
 (K7 2026-11-05: "go for the correction data, do another 100 episodes of that and add it to this dataset").
 
-  python generate_corrections.py --ckpt <policy pretrained_model> --episodes 100     appends to krish5831/shear_sim_scripted_v0
+  python generate_corrections.py --ckpt <policy pretrained_model> --episodes 100 --repo-id <dataset>    appends to it
   python generate_corrections.py --ckpt ... --episodes 2 --repo-id krish5831/shear_corrections_smoketest --new
 
+⚠️ Used once, for the v0 rig (2026-11-05): 100 corrections appended to krish5831/shear_sim_scripted_v0, which
+policy/train_smolvla_lora.sh expert-v2 trained on. The v1 rig's training (v3, krish5831/shear_sim_scripted_v1) has
+no corrections. The default --repo-id follows generate_episodes.REPO_ID, which is now the v1 set: run without
+--repo-id, it appends to the v1 training set in place. Pass --repo-id explicitly. It records cameras.CAMERAS
+(base + claw since the v1 rig), so it can no longer append to the v0 set (birdseye + claw).
+
 Why: the policy trained on the 200 scripted passes reaches the right leaf but drives the jaw into the stem in the
-last few mm (v1: 0 of 51 cuts, the stem pressed in 10 of 10 rows, 2026-11-05). Every demonstration ends 2 mm from
-the stem and none shows a recovery from a small error, so the policy has never seen how to get out of one.
+last few mm (the expert v1 policy on the v0 rig: 0 of 51 cuts, the stem pressed in 10 of 10 rows, 2026-11-05).
+Every demonstration ends 2 mm from the stem and none shows a recovery from a small error, so the policy has never
+seen how to get out of one.
 Dream Machines' π0.5 write-up (2026): intervention data took a policy from 28 % to 88 % (HG-DAgger style).
 
 Per row (seeds SEED_BASE+, apart from the dataset's and the rollouts'), set up like the dataset (pots, domain
 randomisation):
 1. The policy drives from the start pose, with RTC, exactly as in rollout_policy.py. Nothing is recorded.
-2. The scripted cutter takes over (TAKEOVER) as soon as the arm comes within DANGER_M of a stem, pot or the frame, or
-   a blade near a truss stalk (rrt.Checker), or the hand has hovered near a leaf to cut for HOVER_S without cutting,
-   or after POLICY_MAX_S.
-3. If the arm is jammed (no clear start for a route), it first backs off straight (back_off). Then it plans the cut of the leaf to cut nearest the hand (cutter.plan_cut from the current pose:
-   an RRT route, the straight slide, the flush cut), plays it, and takes an RRT route back to the start pose. That
+2. The scripted cutter takes over as soon as the arm comes within DANGER_M of a stem, pot or the frame, or a blade
+   near a truss stalk (rrt.Checker), or the hand has hovered near a leaf to cut for HOVER_S without cutting, or
+   after POLICY_MAX_S (drive_until_takeover).
+3. If the arm is jammed (no clear start for a route), it first backs off straight (back_off). Then it plans the cut
+   of the leaf to cut nearest the hand (cutter.plan_cut from the current pose: an RRT route, the straight slide,
+   the flush cut), plays it, and takes an RRT route back to the start pose. That
    takeover, from its first frame to the start pose, is recorded as one episode, like generate_episodes.py (same
    features, task string, cameras). The policy's own lead-up isn't: it would teach the mistakes.
-Kept only if the cut passes the judge and nothing was pressed after the takeover. Logged to ~/.cache/shear_sim/episodes/.
+Kept only if the cut passes the judge and nothing was pressed after the takeover. Logged to
+~/.cache/shear_sim/episodes/.
 
-⚠️ Appending changes the dataset in place: back it up first (it was, to shear_sim_scripted_v0_backup_200eps). Run
+⚠️ Appending changes the dataset in place: back it up first (v0 was, to shear_sim_scripted_v0_backup_200eps). Run
 outside Claude Code's sandbox (the GPU), under systemd-run MemoryMax. Never pushes to the Hub.
 """
 import argparse
@@ -170,10 +179,12 @@ def main():
                 retreat, stuck = back_off(sim.scn, chk)
                 if retreat is None:
                     ds.clear_episode_buffer()
-                    r.close(); sim.cams.close()
+                    r.close()
+                    sim.cams.close()
                     rec.update(kept=False, why=f"no straight back-off clears the arm: {stuck}")
                     print(f"row {seeds[0]}: {why} -> stuck: {stuck} [{time.time() - t0:.0f} s]", flush=True)
-                    log.write(json.dumps(rec, default=str) + "\n"); log.flush()
+                    log.write(json.dumps(rec, default=str) + "\n")
+                    log.flush()
                     continue
                 if len(retreat) > 1:
                     sim.ep.route("back_off", retreat, sim.ep.jaw)
@@ -191,11 +202,13 @@ def main():
                     plan = None
                 if plan is None:
                     ds.clear_episode_buffer()
-                    r.close(); sim.cams.close()
+                    r.close()
+                    sim.cams.close()
                     rec.update(kept=False, why=f"no plan after the back-off: {whys[:2]}")
                     print(f"row {seeds[0]}: {why} -> no plan after backing off {rec['backoff_m']} m: {whys[:2]} "
                           f"[{time.time() - t0:.0f} s]", flush=True)
-                    log.write(json.dumps(rec, default=str) + "\n"); log.flush()
+                    log.write(json.dumps(rec, default=str) + "\n")
+                    log.flush()
                     continue
                 res = sim.ep.cut(plan)
                 back = sim.ep.go_start()
@@ -208,14 +221,15 @@ def main():
                     ds.save_episode()
                     rec.update(kept=True, episode_index=n0 + kept)
                     kept += 1
-                    print(f"✅ correction {kept}/{a.episodes} (episode {n0 + kept - 1}): row {seeds[0]}, took over after "
-                          f"{rec['policy_s']} s ({why}), cut {res['leaf']} stub {res['stub_mm']} mm, {r.n} frames "
-                          f"[{rec['wall_s']} s]", flush=True)
+                    print(f"✅ correction {kept}/{a.episodes} (episode {n0 + kept - 1}): row {seeds[0]}, "
+                          f"took over after {rec['policy_s']} s ({why}), cut {res['leaf']} stub {res['stub_mm']} mm, "
+                          f"{r.n} frames [{rec['wall_s']} s]", flush=True)
                 else:
                     ds.clear_episode_buffer()
                     rec.update(kept=False, why=res["why"] or back["pressed"])
                     print(f"row {seeds[0]}: {why} -> discarded ({rec['why']}) [{rec['wall_s']} s]", flush=True)
-                log.write(json.dumps(rec, default=str) + "\n"); log.flush()
+                log.write(json.dumps(rec, default=str) + "\n")
+                log.flush()
         finally:
             ds.finalize()
             summary = dict(summary=True, kept=kept, rows=rows, minutes=round((time.time() - t_start) / 60, 1),

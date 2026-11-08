@@ -1,11 +1,12 @@
 """The InnoMaker 130 deg lens on top of MuJoCo's pinhole cameras.
 
-Copied from B.L.U.S.H sim/lens.py (commit e91ef0c) unchanged: it models the camera hardware, which SHEAR
-shares with B.L.U.S.H. Where the cameras sit is SHEAR's own (layout.py).
+Copied from B.L.U.S.H sim/lens.py (commit e91ef0c): it models the camera hardware, which SHEAR shares with
+B.L.U.S.H. Where the cameras sit is SHEAR's own (layout.py). Changed: load() adds the v1 rig's "base" camera
+(K7 2026-11-06), the same lens as the birdseye.
 
-MuJoCo cameras are pinhole. The real birdseye and claw cameras (InnoMaker U20CAM-1080P, M12 wide
+MuJoCo cameras are pinhole. The real cameras (InnoMaker U20CAM-1080P, M12 wide
 lens) bend straight lines and squeeze the edges. So each sim camera renders a wider pinhole image
-and remaps it through a fisheye model into the 640x480 frame the gate and the policy see:
+and remaps it through a fisheye model into the 640x480 frame the labels and the policy see:
 
     lens = LENSES["birdseye"]
     rgb = lens.distort(pinhole_rgb)                  # (lens.pin_h, lens.pin_w, 3) -> (480, 640, 3)
@@ -23,7 +24,8 @@ import pathlib
 import numpy as np
 
 HERE = pathlib.Path(__file__).resolve().parent
-MEASURED = HERE / "cameras.json"   # {"birdseye": {"K": 3x3, "D": [k1..k4], "size": [w, h], "source": "..."}, "claw": ...}
+# {"birdseye": {"K": 3x3, "D": [k1..k4], "size": [w, h], "source": "..."}, "claw": ...}
+MEASURED = HERE / "cameras.json"
 W, H = 640, 480                    # config/hardware.env CAM_W x CAM_H
 
 # --- the guess, until a checkerboard calibration replaces it ---
@@ -74,7 +76,8 @@ class Lens:
         self.map_x = (self.f_pin * x + self.pin_w / 2 - 0.5).astype(np.float32)
         self.map_y = (self.f_pin * y + self.pin_h / 2 - 0.5).astype(np.float32)
         self.fov_deg = {k: float(np.degrees(2 * self.theta(r))) for k, r in
-                        (("h", self.w / 2 / fx), ("v", self.h / 2 / fy), ("d", np.hypot(self.w / 2 / fx, self.h / 2 / fy)))}
+                        (("h", self.w / 2 / fx), ("v", self.h / 2 / fy),
+                         ("d", np.hypot(self.w / 2 / fx, self.h / 2 / fy)))}
 
     def _poly(self, th):
         t2 = th * th

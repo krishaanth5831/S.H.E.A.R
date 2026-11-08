@@ -2,10 +2,10 @@
 """Step 5 of the SHEAR sim plan: scripted deleafing passes recorded as a LeRobot dataset (K7 2026-11-03: "get
 started on the episode gen").
 
-  python generate_episodes.py --pilot                   5 episodes into krish5831/shear_sim_scripted_v0_pilot
-  python generate_episodes.py --episodes 200            into krish5831/shear_sim_scripted_v0
+  python generate_episodes.py --pilot                   5 episodes into krish5831/shear_sim_scripted_v1_pilot
+  python generate_episodes.py --episodes 200            into krish5831/shear_sim_scripted_v1 (the v3 training set)
   python generate_episodes.py --episodes 200 --resume   append to it after a crash
-  lerobot-dataset-viz --repo-id krish5831/shear_sim_scripted_v0_pilot --episode-index 0     what got recorded
+  lerobot-dataset-viz --repo-id krish5831/shear_sim_scripted_v1_pilot --episode-index 0     what got recorded
 
 One episode = one pass (cutter.run_pass): from the start pose, the rule's cuts on the three plants in front of
 the arm, back to the start pose. The pots are set first (generate_cuts.best_turns). Every frame is recorded the
@@ -13,8 +13,8 @@ way lerobot-record does it, at 30 fps:
 - observation.state: the 6 joints in use_degrees=false units through the follower's calibration (arm_map.py),
   so sim and real SHEAR data line up
 - action: what the servos were told during that frame (the reference plus the sag correction), the leader's part
-- observation.images.birdseye / .claw: 640x480 through the lens model, clean (no labels drawn: the policy sees
-  what the real cameras see)
+- observation.images.base / .claw (cameras.CAMERAS; v0 had .birdseye / .claw): 640x480 through the lens model,
+  clean (no labels drawn: the policy sees what the real cameras see)
 - robot_type so_follower, the real follower's, so sim and real datasets can be merged
 
 Kept only if the judge passes the whole pass (every cut PASS, at least one cut, back at the start pose without
@@ -38,8 +38,10 @@ import numpy as np  # noqa: E402
 import arm_map  # noqa: E402
 import cutter as ct  # noqa: E402
 import generate_cuts as gc  # noqa: E402
+from cameras import CAMERAS  # noqa: E402  ("base", "claw") since the v1 rig
 
-# ⚠️ LOCK before the first real batch: changing it later makes earlier episodes a different task for the policy.
+# ⚠️ LOCKED: v0 and v1 were recorded with it (their meta/tasks.parquet). Changing it makes earlier episodes a
+# different task for the policy.
 TASK = "Cut the leaves below the lowest ripening truss off flush at the stem."
 # v1 (K7 2026-11-06): the v1 rig, base camera + claw, the arm's base 5 cm back (layout.py). v0 was birdseye + claw.
 REPO_ID = "krish5831/shear_sim_scripted_v1"
@@ -47,11 +49,12 @@ PILOT_EPISODES = 5
 # Data mix (K7 2026-11-06, from the SockBot series: the policy must also see "don't reach"):
 HOLD_FRAC = 0.10             # at most this share of the batch: rows where the rule cuts NOTHING, the arm stays home
 HOLD_S = 4.0                 # seconds the arm holds the start pose in such an episode
-P0_ONLY_SKIP = 0.5           # rows with cuts on p0 only are skipped this often: v0 had 180 / 34 / 0 cuts on p0 / p1 / p2
-START_JITTER_DEG = 3.0       # the arm starts this far off its start pose (uniform per joint); it still ends exactly on it
+# rows with cuts on p0 only are skipped this often: v0 had 180 / 34 / 0 cuts on p0 / p1 / p2
+P0_ONLY_SKIP = 0.5
+# the arm starts this far off its start pose (uniform per joint); it still ends exactly on it
+START_JITTER_DEG = 3.0
 SEED_BASE = 900_000          # row attempt k uses seeds SEED_BASE + 3k .. +2 (apart from the trials' 700000s)
 LOG_DIR = pathlib.Path.home() / ".cache" / "shear_sim" / "episodes"
-from cameras import CAMERAS  # noqa: E402  ("base", "claw") since the v1 rig
 
 
 class Recorder:
@@ -160,13 +163,16 @@ def main():
                 rule_cuts = sum(len(ct.sg.label(ct.sg.make_plant(sd, bend=True)).cuts) for sd in seeds)
                 hold = rule_cuts == 0 and n_hold < HOLD_FRAC * n_eps
                 if not any(found) and not hold:
-                    rec.update(kept=False, why="no pot angle gives a clean cut" if rule_cuts else "the rule cuts nothing (hold quota full)")
-                    log.write(json.dumps(rec) + "\n"); log.flush()
+                    rec.update(kept=False, why="no pot angle gives a clean cut" if rule_cuts
+                               else "the rule cuts nothing (hold quota full)")
+                    log.write(json.dumps(rec) + "\n")
+                    log.flush()
                     print(f"row {seeds[0]}: skipped, {rec['why']}", flush=True)
                     continue
                 if not hold and found[1] + found[2] == 0 and rng.random() < P0_ONLY_SKIP:
                     rec.update(kept=False, why="balance: cuts on p0 only")
-                    log.write(json.dumps(rec) + "\n"); log.flush()
+                    log.write(json.dumps(rec) + "\n")
+                    log.flush()
                     print(f"row {seeds[0]}: skipped for balance (cuts on p0 only)", flush=True)
                     continue
                 scn = ct.Scene(seeds, turns=turns, domain_rand=not a.no_dr)
@@ -194,7 +200,8 @@ def main():
                     print(f"✅ episode {kept - 1} ({kept}/{n_eps}): row {seeds[0]}, {res['n_cut']} of the rule's "
                           f"{res['n_rule']} cuts, {r.n} frames ({r.n / ct.FPS:.0f} s) [{rec['wall_s']} s wall]",
                           flush=True)
-                log.write(json.dumps(rec, default=str) + "\n"); log.flush()
+                log.write(json.dumps(rec, default=str) + "\n")
+                log.flush()
         finally:
             ds.finalize()
             summary = dict(summary=True, kept=kept, attempts=attempts, minutes=round((time.time() - t_start) / 60, 1))

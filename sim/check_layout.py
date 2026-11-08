@@ -15,6 +15,10 @@ Checks:
 - the claw camera looks along the jaw: the fingertips are near its image centre
 - the arm's base is square to the row, right in front of its plant, and IK reaches the ready pose
 
+⚠️ These checks and the picture cover the birdseye, which stays in the scene for the label tools. Since the v1 rig
+(K7 2026-11-06) the dataset records the base camera + claw instead (cameras.CAMERAS); the base camera's placement
+(layout.py) has no check here yet.
+
 Run in the lerobot env under the 9 GB cap. Writes only the --picture file. Needs ./fetch_so101.sh once.
 """
 import argparse
@@ -75,8 +79,8 @@ def run_checks():
     zs = [[sp.z[i] for i in range(len(sp.nodes)) if sp.in_band(i)] for sp in info["specs"]]
     band = [(x, y, z) for (x, y), zz in zip(info["stems"], zs) for z in (min(zz), max(zz))]
     ok_band = in_frame(cams.project(d, "birdseye", np.array(band)), be)
-    report(ok_band.all(), f"birdseye sees every plant from its lowest to its highest node, z {min(map(min, zs)):.2f}-{max(map(max, zs)):.2f} m "
-           f"({int(ok_band.sum())}/{len(band)} band ends in frame)")
+    report(ok_band.all(), f"birdseye sees every plant from its lowest to its highest node, "
+           f"z {min(map(min, zs)):.2f}-{max(map(max, zs)):.2f} m ({int(ok_band.sum())}/{len(band)} band ends in frame)")
     base = info["arm_base"]
     arm_base_pts = np.array([base + (dx, dy, dz) for dx in (-0.05, 0.05) for dy in (-0.05, 0.05) for dz in (0.0, 0.10)])
     out = ~in_frame(cams.project(d, "birdseye", arm_base_pts), be, margin=0)
@@ -111,8 +115,8 @@ def run_checks():
     sx, sy = info["stems"][info["target_plant"]]
     report(ang < 0.5 and abs(base[0] - sx) < 1e-6, f"the arm's base faces the row squarely ({ang:.1f} deg off its "
            f"normal) and stands right in front of plant p{info['target_plant']} (x {base[0]:.2f} = stem x {sx:.2f})")
-    report(info["ready_err"] < 0.002, f"ready pose: fingertips {lo.READY_STANDOFF * 100:.0f} cm in front of the stem at "
-           f"{lo.READY_Z:.2f} m, IK error {info['ready_err'] * 1000:.1f} mm "
+    report(info["ready_err"] < 0.002, f"ready pose: fingertips {lo.READY_STANDOFF * 100:.0f} cm in front of the "
+           f"stem at {lo.READY_Z:.2f} m, IK error {info['ready_err'] * 1000:.1f} mm "
            f"({', '.join(f'{k} {np.degrees(v):.0f}' for k, v in info['ready'].items())} deg)")
     cams.close()
     print("\nALL PASS" if not fails else f"\n{fails} FAIL")
@@ -139,7 +143,8 @@ def _add_line(scn, a, b, rgba, width=3.0):
     if scn.ngeom >= scn.maxgeom:
         return
     g = scn.geoms[scn.ngeom]
-    mujoco.mjv_initGeom(g, mujoco.mjtGeom.mjGEOM_LINE, np.zeros(3), np.zeros(3), np.zeros(9), np.asarray(rgba, np.float32))
+    mujoco.mjv_initGeom(g, mujoco.mjtGeom.mjGEOM_LINE, np.zeros(3), np.zeros(3), np.zeros(9),
+                        np.asarray(rgba, np.float32))
     mujoco.mjv_connector(g, mujoco.mjtGeom.mjGEOM_LINE, width, np.asarray(a, float), np.asarray(b, float))
     scn.ngeom += 1
 
@@ -169,13 +174,15 @@ def picture(path):
     r = mujoco.Renderer(m, 480, 640)
     views = []
     import greenhouse as gh
-    for az, el, look, dist, roof in ((20, -18, (0.30, 0.18, 0.24), 1.25, False), (90, -88, (0.37, 0.12, 0.0), 1.35, False)):
+    for az, el, look, dist, roof in ((20, -18, (0.30, 0.18, 0.24), 1.25, False),
+                                     (90, -88, (0.37, 0.12, 0.0), 1.35, False)):
         cam = mujoco.MjvCamera()
         cam.lookat[:], cam.distance, cam.azimuth, cam.elevation = look, dist, az, el
         opt = mujoco.MjvOption()
         opt.geomgroup[gh.ROOF_GROUP] = roof
         r.update_scene(d, cam, opt)
-        for name, rgba, L in (("birdseye", (0.1, 0.4, 1.0, 1), lo.ROW_Y - lo.BIRDSEYE_POS[1]), ("claw", (1.0, 0.2, 0.6, 1), 0.15)):
+        for name, rgba, L in (("birdseye", (0.1, 0.4, 1.0, 1), lo.ROW_Y - lo.BIRDSEYE_POS[1]),
+                              ("claw", (1.0, 0.2, 0.6, 1), 0.15)):
             c, corners = _frustum(m, d, name, L)
             _add_dot(r.scene, c, rgba)
             for k, p in enumerate(corners):

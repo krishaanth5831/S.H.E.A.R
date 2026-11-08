@@ -10,12 +10,13 @@ the params are returned for the episode log.
 
 What is randomised and why:
 - Lights and the headlight ambient: the real greenhouse's light isn't known (sun, cloud, grow lamps).
-- Greenhouse ply, floor, pots, mast: their real finish isn't known.
+- Greenhouse ply, floor, pots, the birdseye mast and the base camera's bracket: their real finish isn't known.
 - Leaves, stems, fruit: jittered INSIDE their class (hue a little, saturation and brightness more), so a green
   leaf stays green and a yellow one yellow, and a ripe fruit stays red: the rule's and the labels' classes keep
   meaning the same thing (as B.L.U.S.H keeps fruit inside its ripeness class).
-- Camera poses: the birdseye mast is placed by hand and the claw camera sits on a printed mount (B.L.U.S.H's
-  ranges).
+- Camera poses: the birdseye mast is placed by hand (B.L.U.S.H's range), the base camera sits on a printed bracket
+  off the base plate, and the claw camera on a printed wrist mount (B.L.U.S.H's range). The dataset records base +
+  claw since the v1 rig; the birdseye is jittered too, for the label tools.
 """
 import colorsys
 

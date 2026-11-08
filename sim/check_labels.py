@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Step 4 of the SHEAR sim plan, part 1: the labels the cut-point model will learn from (labels.py), checked.
 
-  python check_labels.py                       PASS/FAIL checks on a few random rows, exit 1 on a FAIL
-  python check_labels.py --picture out.png     birdseye frames with the labels drawn on (2x size)
+  python check_labels.py                       PASS/FAIL checks on four fixed rows (ROWS), exit 1 on a FAIL
+  python check_labels.py --picture out.png     each plant zoomed in from the birdseye frame, leaves numbered, one
+                                               legend line per leaf (draw_plants)
   python check_labels.py --windowed            the row in the viewer, every cut point marked by what the rule
                                                does with that leaf: red = cut, orange = flag, blue = held back
                                                (guard / cap), white = keep. [ and ] switch to the birdseye.
@@ -14,6 +15,9 @@ Checks:
   crossing the view isn't hidden by its own stem or petiole
 - seen keypoints sit in or at their object's box; the YOLO rows read back to the same boxes and keypoints
 - INFO: how many of the rule's cut points the birdseye actually sees (the rest is the claw camera's job)
+
+The labels are on birdseye frames. Since the v1 rig (K7 2026-11-06) the dataset records the base camera + claw
+instead, but the birdseye and its mast stay in the scene for these label tools (cameras.py).
 
 Run in the lerobot env with MUJOCO_GL=egl, under the 9 GB cap. Writes only the --picture file.
 """
@@ -74,7 +78,8 @@ def run_checks():
             if owner[g] is not None:
                 shown[owner[g]] = shown.get(owner[g], 0) + int((ids == g).sum())
         for k, spec in enumerate(info["specs"]):
-            for i, (c, _, _) in lb.node_points(spec, info["stems"][k], {i: w for (kk, i), w in info["where"].items() if kk == k}).items():
+            where_k = {i: w for (kk, i), w in info["where"].items() if kk == k}
+            for i, (c, _, _) in lb.node_points(spec, info["stems"][k], where_k).items():
                 need = lb.SCAR_MIN_PX if c == "scar" else lb.MIN_PX
                 if shown.get((k, i), 0) >= need and (k, i) not in keys:
                     missing.append((seeds[k], i, c))
@@ -87,7 +92,8 @@ def run_checks():
                 wrong_cls.append((o.cls, true))
             x0, y0, x1, y1 = o.box
             for u, v, vis in o.kpts:
-                if vis == 2 and not (x0 - BOX_TOL_PX <= u <= x1 + BOX_TOL_PX and y0 - BOX_TOL_PX <= v <= y1 + BOX_TOL_PX):
+                if vis == 2 and not (x0 - BOX_TOL_PX <= u <= x1 + BOX_TOL_PX
+                                     and y0 - BOX_TOL_PX <= v <= y1 + BOX_TOL_PX):
                     out_box += 1
             if o.cls == "stem":
                 # depth check on the stem's own pixels near its middle: render vs the stem's front surface
@@ -116,7 +122,7 @@ def run_checks():
         for spec in info["specs"]:
             cut_total += len(sg.label(spec).cuts)
         back = lb.parse_yolo(lb.yolo_lines(objs))
-        for o, (c, box, kp) in zip(objs, back):
+        for o, (_c, box, kp) in zip(objs, back):
             round_err = max(round_err, float(np.abs(np.array(box) - np.array(o.box)).max()),
                             float(np.abs(kp[o.kpts[:, 2] > 0] - o.kpts[o.kpts[:, 2] > 0]).max(initial=0)))
         cams.close()
@@ -129,7 +135,8 @@ def run_checks():
     report(len(de) > 20 and np.median(de) < 0.001, f"depth render vs projected depth on {len(de)} stem pixels: "
            f"median {np.median(de) * 1000:.2f} mm, max {de.max() * 1000:.1f} mm (the visibility test uses it)")
     report(behind and behind_hidden / behind >= 0.9,
-           f"cut points behind the stem (petiole pointing away from the birdseye) marked hidden: {behind_hidden}/{behind}")
+           f"cut points behind the stem (petiole pointing away from the birdseye) marked hidden: "
+           f"{behind_hidden}/{behind}")
     report(facing and facing_self <= max(1, facing // 10),
            f"cut points on a petiole crossing the view: {facing_self} of {facing} marked hidden behind their own stem "
            f"or petiole (the others marked hidden have another leaf or truss in front)")
@@ -193,7 +200,8 @@ def draw_plants(img, objs, n_plants=3):
         crop = (0.55 * crop + 0.45 * 255).astype(np.uint8)          # faded, so the marks stand out
         canvas = np.full((PANEL_H + 50, crop.shape[1] + LEGEND_W, 3), 255, np.uint8)
         canvas[50:50 + crop.shape[0], :crop.shape[1]] = crop
-        P = lambda u, v: (int((u - x0) * sc_), int((v - y0) * sc_) + 50)
+        # image px -> this panel's canvas px (crop corner and scale bound now; P is only used in this panel)
+        P = lambda u, v, x0=x0, y0=y0, sc_=sc_: (int((u - x0) * sc_), int((v - y0) * sc_) + 50)
         n_cut = sum(o.decision == "cut" for o in leaves)
         cv2.putText(canvas, f"plant {k + 1}: {len(leaves)} leaves in view, {n_cut} to cut", (8, 32),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.75, (20, 20, 20), 2, cv2.LINE_AA)
@@ -216,7 +224,8 @@ def draw_plants(img, objs, n_plants=3):
                 cv2.circle(canvas, p0, 8, (0, 0, 0), 1, cv2.LINE_AA)
             else:
                 cv2.circle(canvas, p0, 8, col, 2, cv2.LINE_AA)
-            cv2.putText(canvas, str(n), (p0[0] - 5, p0[1] - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2, cv2.LINE_AA)
+            cv2.putText(canvas, str(n), (p0[0] - 5, p0[1] - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2,
+                        cv2.LINE_AA)
             rows.append((p0, n, word + ("" if s0 == 2 else " (cut point hidden)"), col))
         # legend: one line per leaf, at the height of its cut point, pushed apart so they don't overlap
         lx = crop.shape[1] + 30
@@ -224,22 +233,23 @@ def draw_plants(img, objs, n_plants=3):
             y = max(p0[1], last_y + 26, 70)
             last_y = y
             cv2.line(canvas, (p0[0] + 9, p0[1]), (lx - 6, y - 5), col, 1, cv2.LINE_AA)
-            cv2.putText(canvas, f"{n}  {text}", (lx, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 1 if col == (120, 120, 120) else 2,
-                        cv2.LINE_AA)
+            cv2.putText(canvas, f"{n}  {text}", (lx, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, col,
+                        1 if col == (120, 120, 120) else 2, cv2.LINE_AA)
         panels.append(canvas)
     sep = np.full((PANEL_H + 50, 6, 3), 200, np.uint8)
     body = np.concatenate([x for p in panels for x in (p, sep)][:-1], 1)
     head = np.full((70, body.shape[1], 3), 255, np.uint8)
-    for i, line in enumerate(("Each plant zoomed in, leaves only (numbered from the bottom). Dot = where the leaf stalk meets "
-                              "the stem = the cut point.",
-                              "Filled dot = the overview camera sees it; ring = hidden behind fruit, stem or another leaf. "
-                              "Arrow = the stalk's direction.")):
+    for i, line in enumerate(("Each plant zoomed in, leaves only (numbered from the bottom). Dot = where the leaf "
+                              "stalk meets the stem = the cut point.",
+                              "Filled dot = the overview camera sees it; ring = hidden behind fruit, stem or another "
+                              "leaf. Arrow = the stalk's direction.")):
         cv2.putText(head, line, (10, 28 + 28 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (20, 20, 20), 1, cv2.LINE_AA)
     return np.concatenate([head, body], 0)[..., ::-1]
 
 
 def picture(path, rows=ROWS[:2]):
     from PIL import Image
+
     from cameras import SimCameras
     tiles = []
     for seeds in rows:
@@ -264,8 +274,8 @@ def windowed(seeds=ROWS[0]):
         for (kk, i), w in info["where"].items():
             if kk == k:
                 marks.append((w["base"], DECISION_RGBA.get(dec.get(spec.nodes[i].id, ""), (1, 1, 1, 1))))
-    print(f"{len(marks)} cut points: red = the rule cuts it, orange = flagged for a person, blue = held back, white = keep."
-          "\nThe dots stay where the leaves were built; the leaves settle a few mm.")
+    print(f"{len(marks)} cut points: red = the rule cuts it, orange = flagged for a person, blue = held back, "
+          "white = keep.\nThe dots stay where the leaves were built; the leaves settle a few mm.")
     with mujoco.viewer.launch_passive(m, d) as v:
         v.cam.lookat[:] = (lo.PLANT_X[1], lo.ROW_Y, 0.25)
         v.cam.distance, v.cam.azimuth, v.cam.elevation = 0.8, -90, -10

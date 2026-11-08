@@ -72,6 +72,7 @@ EL = (10, 30, 45)
 PSI = (-60, -45, -30, -15, 15, 30, 45, 60)
 LEAN_EL = (0, 5, 10, 15, 20, 30)          # square cuts on a leaf along the row: the blade leans as far as el
 LEAN_OFFSET = (2.0, 4.0, 6.0)
+UP = np.array([0.0, 0.0, 1.0])            # world up (MuJoCo z), the stem's axis
 
 
 def petiole_dir(az, el):
@@ -155,9 +156,6 @@ def stub_range(S, a, petiole_r, plane_pt, n, stem_r=STEM_R, k=36):
     return min(h), max(h)
 
 
-UP = np.array([0.0, 0.0, 1.0])
-
-
 def run_case(c, torque=sc.GRIPPER_TORQUE):
     built = build_case(c, torque)
     if built is None:
@@ -190,7 +188,7 @@ def run_case(c, torque=sc.GRIPPER_TORQUE):
     blades = [m.geom("arm/" + b).id for b in sc.BLADE_PAIRS[info["face"]]]     # the pair next to the stem
     n_steps = round((SETTLE_S + CLOSE_S + HOLD_S) / m.opt.timestep)
     tail, at_cut = [], None
-    for k in range(n_steps):
+    for _ in range(n_steps):
         u = np.clip((d.time - SETTLE_S) / CLOSE_S, 0.0, 1.0)
         d.ctrl[jaw] = info["jaw_open"] + (sc.GRIPPER_RANGE_RAD[0] - info["jaw_open"]) * u
         mujoco.mj_step(m, d)
@@ -266,10 +264,10 @@ def run_checks(table):
         print(("PASS " if ok else "FAIL ") + msg, flush=True)
 
     ik = rig_ik()
-    print(f"rig: dwarf stem {STEM_R * 2000:.1f} mm, {STEM_X:.3f} m in front of the arm's base, cut at z {Z_CUT:.2f} m; "
-          f"leaf {LEAF.length * 100:.1f} cm / {LEAF.mass * 1000:.1f} g, bending petiole; joint limits from "
-          f"{ik.limits_from}. Cut force scales with the petiole: {pl.cut_force_for(0.0015):.1f} N for 3 mm "
-          f"(unverified).\n", flush=True)
+    print(f"rig: dwarf stem {STEM_R * 2000:.1f} mm, {STEM_X:.3f} m in front of the arm's base, "
+          f"cut at z {Z_CUT:.2f} m; leaf {LEAF.length * 100:.1f} cm / {LEAF.mass * 1000:.1f} g, bending petiole; "
+          f"joint limits from {ik.limits_from}. Cut force scales with the petiole: "
+          f"{pl.cut_force_for(0.0015):.1f} N for 3 mm (unverified).\n", flush=True)
     res = run_all(table)
     get = lambda **kw: res[_key(case(**kw))]
     clean = lambda r, off=0.002: (r["reach"] and not r["blocked"] and r["cut"] and r["stem_peak"] < STEM_TOUCH_N
@@ -279,8 +277,9 @@ def run_checks(table):
                          f"stub {r['stub_min'] * 1000:.1f}-{r['stub_max'] * 1000:.1f} mm")
 
     rs = [get(el=el) for el in EL]
-    report(all(clean(r) for r in rs), f"flush cut on a leaf along the row (az -90), petiole up {'/'.join(map(str, EL))} deg: "
-           + ", ".join(verdict(r) for r in rs) + f" (2 mm asked, stem untouched)")
+    report(all(clean(r) for r in rs),
+           f"flush cut on a leaf along the row (az -90), petiole up {'/'.join(map(str, EL))} deg: "
+           + ", ".join(verdict(r) for r in rs) + " (2 mm asked, stem untouched)")
 
     sq = [(el, o) for el in LEAN_EL if el >= 5 for o in LEAN_OFFSET]
     bad = [(el, o) for el, o in sq if not clean(get(mode="square", el=el, offset=o), o / 1000)]
@@ -291,11 +290,12 @@ def run_checks(table):
     bad_pitch = [get(psi=p)["pitch"] for p in PSI if get(psi=p)["reach"] and not clean(get(psi=p))]
     report(ok_pitch and min(ok_pitch) < -15 and max(ok_pitch) > 5,
            f"fingers pitched {min(ok_pitch):+.0f}..{max(ok_pitch):+.0f} deg off level still cut clean"
-           + (f"; {', '.join(f'{p:+.0f}' for p in bad_pitch)} deg don't (the finger runs along the stem)" if bad_pitch else ""))
+           + (f"; {', '.join(f'{p:+.0f}' for p in bad_pitch)} deg don't (the finger runs along the stem)"
+              if bad_pitch else ""))
 
     offs = [(o, r) for r in (1.2, 1.5, 1.8) for o in (2.0, 4.0)]
     bad = [(o, r) for o, r in offs if not clean(get(offset=o, r=r), o / 1000)]
-    report(not bad, f"flush stubs of 2 / 4 mm on 2.4-3.6 mm petioles: the stub follows the offset, stem untouched"
+    report(not bad, "flush stubs of 2 / 4 mm on 2.4-3.6 mm petioles: the stub follows the offset, stem untouched"
            + (f" (fails: {bad})" if bad else ""))
     eight = [get(offset=8.0, r=r) for r in (1.2, 1.5, 1.8)]
     print(f"INFO an 8 mm stub on 2.4 / 3.0 / 3.6 mm petioles: {', '.join(verdict(r) for r in eight)}. Out there the "
@@ -310,10 +310,11 @@ def run_checks(table):
     for kw, what in (({"shift": -2.0}, "2 mm toward the tips"), ({"shift": 2.0}, "2 mm toward the palm"),
                      ({"gap": 0.5}, "0.5 mm above the fixed edge"), ({"gap": 1.0}, "1 mm above the fixed edge")):
         report(clean(get(**kw)), f"petiole {what} (aim / sag error): {verdict(get(**kw))}")
-    print(f"INFO petiole 2 mm above the fixed edge: {verdict(get(gap=2.0))} (blades {get(gap=2.0)['squeeze_ss']:.1f} N: "
-          f"part of the squeeze goes into bending the petiole)")
+    print(f"INFO petiole 2 mm above the fixed edge: {verdict(get(gap=2.0))} "
+          f"(blades {get(gap=2.0)['squeeze_ss']:.1f} N: part of the squeeze goes into bending the petiole)")
 
-    print("\nINFO which leaves one base position cuts flush (az: 0 = petiole at the arm, -90 = along the row to its left):")
+    print("\nINFO which leaves one base position cuts flush (az: 0 = petiole at the arm, -90 = along the row to its "
+          "left):")
     for az in AZ:
         rr = [get(az=az, el=el) for el in EL]
         r0 = rr[1]

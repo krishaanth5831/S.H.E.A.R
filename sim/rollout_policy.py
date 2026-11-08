@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Roll a trained policy out in the SHEAR sim: does it deleaf new plants the way the scripted cutter does?
 
-  python rollout_policy.py --ckpt ../outputs/train/shear_smolvla_lora_v0/checkpoints/last/pretrained_model --rows 10
+  python rollout_policy.py --ckpt ../outputs/train/shear_smolvla_v3_hub/checkpoints/050000/pretrained_model --rows 10
   python rollout_policy.py ... --no-video
+  python rollout_policy.py --ckpt ... --rtc 10 --rtc-horizon 20 --smooth 0.5   real-time chunking + command smoothing
+  python rollout_policy.py --ckpt ... --n-action-steps 10                     look again every 10 moves, not 50
   python rollout_policy.py --ckpt ... --windowed        watch the policy drive live, row after row (real time)
   python rollout_policy.py --ckpt ... --windowed --rows 1   one row live, then the window closes
   python rollout_policy.py --ckpt ... --start 8 --rows 2 --out <same>   finish an interrupted 10-row test (rows 8-9)
@@ -10,19 +12,20 @@
                                   the same test on rows the policy TRAINED on: fails there too = a pipeline bug or
                                   underfitting; works there but not on new rows = it needs more / more varied data
 
-For each row (new seeds, never in the dataset: SEED_BASE; or, with --train-rows, dataset rows), set up like the training episodes (generate_cuts.best_turns
-pots, domain randomisation), the policy drives the arm from the start pose at 30 fps: every frame it gets the joint
-state (use_degrees=false units), the birdseye and claw frames and the task string, exactly as the dataset recorded
-them, and its action goes to the servos. The episode ends at MAX_S, or once the arm has been back at the start pose
+For each row (new seeds, never in the dataset: SEED_BASE; or, with --train-rows, dataset rows), set up like the
+training episodes (generate_cuts.best_turns pots, domain randomisation), the policy drives the arm from the start pose
+at 30 fps: every frame it gets the joint state (use_degrees=false units), the frames of the dataset's cameras
+(generate_episodes.CAMERAS: base + claw since the v1 rig) and the task string, exactly as the dataset recorded them,
+and its action goes to the servos. The episode ends at MAX_S, or once the arm has been back at the start pose
 for STILL_S after going out.
 
 Judged per row, the same way as the scripted passes (cutter.py): every leaf cut is checked against the rule (a cut the
 rule didn't ask for is a wrong cut), its stub measured, and the peak force of the arm on stems, truss stalks, pots and
 the frame kept. The scripted cutter then runs on the same row as the baseline.
 
-Writes: rollouts.json + rollouts.txt, and rollout_KK.mp4 (side | birdseye | claw, the sim's labels drawn on), into
---out (default ~/.cache/shear_sim/rollouts/<checkpoint name>). Run outside Claude Code's sandbox (the GPU), in the
-lerobot env, under systemd-run MemoryMax.
+Writes: rollouts.json + rollouts.txt, and rollout_KK.mp4 (side | base | claw, the sim's labels drawn on), into
+--out (default ~/.cache/shear_sim/rollouts/<checkpoint step>_<n50 | rtc10h20>[_train]). Run outside Claude Code's
+sandbox (the GPU), in the lerobot env, under systemd-run MemoryMax.
 """
 import argparse
 import json
@@ -137,7 +140,8 @@ def judge(sim):
     pressed = {k: round(v, 1) for k, v in ep.mon.peak.items() if k in ct.FORCE_LIMIT and v > ct.FORCE_LIMIT[k]}
     return dict(rule_cuts=len(rule), cut_right=len(right), cut_clean=len(clean), cut_wrong=len(wrong),
                 wrong=[scn.info["specs"][k].nodes[i].id for k, i in wrong], stubs_mm=stubs, pressed=pressed,
-                blade_on_stalk=round(ep.mon.blade_on_stalk, 1), peaks_n={k: round(v, 2) for k, v in ep.mon.peak.items()})
+                blade_on_stalk=round(ep.mon.blade_on_stalk, 1),
+                peaks_n={k: round(v, 2) for k, v in ep.mon.peak.items()})
 
 
 class RTCDriver:
@@ -283,7 +287,8 @@ def main():
                     help="real-time chunking: a new chunk every REINFER moves, blended over the old one's rest")
     ap.add_argument("--rtc-horizon", type=int, default=20, help="old-chunk moves the new one is guided toward")
     ap.add_argument("--smooth", type=float, default=0.0, metavar="ALPHA",
-                    help="first-order smoothing of the commands, ALPHA = weight of the new one (SockBot used 0.5); 0 = off")
+                    help="first-order smoothing of the commands, ALPHA = weight of the new one (SockBot used 0.5); "
+                         "0 = off")
     a = ap.parse_args()
     global SMOOTH
     SMOOTH = a.smooth
@@ -348,7 +353,8 @@ def main():
         lines.append(f"rollout_{i:02d}.mp4  row {r['row']}: right {r['cut_right']} (stubs {r['stubs_mm']}), wrong "
                      f"{r['cut_wrong']} {r['wrong']}, scripted {r['scripted_cut']}, pressed {r['pressed'] or '-'}, "
                      f"{r['seconds']} s")
-    (out / f"rollouts{suffix}.json").write_text(json.dumps(dict(ckpt=ckpt, rows=rows, totals=tot), indent=1, default=str))
+    (out / f"rollouts{suffix}.json").write_text(json.dumps(dict(ckpt=ckpt, rows=rows, totals=tot), indent=1,
+                                                           default=str))
     (out / f"rollouts{suffix}.txt").write_text("\n".join(lines) + "\n")
     print("\n" + "\n".join(lines))
     return 0

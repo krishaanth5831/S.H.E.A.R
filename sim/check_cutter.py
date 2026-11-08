@@ -3,7 +3,7 @@
 
   python check_cutter.py                 PASS/FAIL checks on one known plant, exit 1 on a FAIL (~30 s)
   python check_cutter.py --windowed      watch that row's whole pass in the MuJoCo window, in real time (it loops)
-  python check_cutter.py --start 11      another plant (generate_cuts.py's attempt numbering)
+  python check_cutter.py --start N       another row: generate_cuts.py's attempt number N (default START)
 
 Checks:
 - the known plant has a cut the cutter can plan (pot turned, as generate_cuts.py does)
@@ -26,6 +26,8 @@ import cutter as ct
 import rrt
 
 START = 11                   # generate_cuts.py row attempt 11 = seeds 700033..35, a row with a plannable cut
+# ⚠️ ...until the v1 rig (2026-11-06: the arm's base 5 cm back, floor an obstacle). Since then this row plans no cut
+# and the first check FAILs (it still passes at 6c1c31a^). Pick a new row before trusting this check again.
 
 
 def planned(start):
@@ -64,8 +66,9 @@ def run_checks(start):
                        f"blades {rrt.BLADE_CLEARANCE * 1000:.0f} mm from truss stalks, checked 4x finer than planned"
                        + ("" if not p.brushes_leaves else " (it may brush kept leaves: no route cleared them)"))
     if len(p.to_leaf) == 2:
-        print("INFO the route is the straight joint-space line: it is already clear" +
-              (" of stems, pots and the frame (no route cleared the kept leaves' stalks too)" if p.brushes_leaves else ""))
+        print("INFO the route is the straight joint-space line: it is already clear"
+              + (" of stems, pots and the frame (no route cleared the kept leaves' stalks too)"
+                 if p.brushes_leaves else ""))
     else:
         bumps = chk.hits(scn.home) or not chk.segment_free(scn.home, p.to_leaf[-1], soft=not p.brushes_leaves)
         report(bumps, f"the RRT route bends around things ({len(p.to_leaf)} points): the straight joint-space "
@@ -95,7 +98,7 @@ def windowed(start):
             v.cam.distance, v.cam.azimuth, v.cam.elevation = 0.85, 245, -22
             last = [time.time()]
 
-            def frame(phase, ep):
+            def frame(phase, ep, last=last):      # bound now: frame only runs inside this iteration's run_pass
                 if not v.is_running():
                     raise KeyboardInterrupt
                 v.sync()

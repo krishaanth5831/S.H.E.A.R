@@ -1,12 +1,13 @@
-"""The sim's birdseye + claw cameras, rendered through the lens model (lens.py).
+"""The sim's cameras (base + claw recorded since the v1 rig, birdseye kept for the labels), rendered through the
+lens model (lens.py).
 
 Copied from B.L.U.S.H sim/cameras.py (commit e91ef0c): the renderers only. Camera placement is SHEAR's
-own, in layout.py. Changed: CAM_IN_MODEL names; sphere_box dropped (fruit boxes are B.L.U.S.H's job).
-Added (SHEAR step 4): depth(), for the keypoint labels' visibility test (labels.py).
+own, in layout.py. Changed: CAM_IN_MODEL names; sphere_box and true_box dropped (fruit boxes are B.L.U.S.H's job).
+Added (SHEAR step 4): depth() and cam_depth(), for the keypoint labels' visibility test (labels.py).
 
     cams = SimCameras(m)                      # ⚠️ one per model AND per thread: a MuJoCo renderer is
-    rgb = cams.rgb(d, "birdseye")             #    bound to the model and to the GL context's thread
-    box, px = cams.true_box(d, "birdseye", geom_id)
+    rgb = cams.rgb(d, "base")                 #    bound to the model and to the GL context's thread
+    ids = cams.ids(d, "birdseye")             # per pixel geom id; depth(), project() likewise
     cams.close()
 """
 import mujoco
@@ -21,8 +22,8 @@ CAM_IN_MODEL = {"birdseye": "birdseye", "base": "base", "claw": "arm/claw"}
 
 
 def pinhole_size():
-    """The offscreen buffer every camera's pinhole render fits in (scene.py sets it on the model)."""
-    return max(l.pin_w for l in LENSES.values()), max(l.pin_h for l in LENSES.values())
+    """The offscreen buffer every camera's pinhole render fits in (layout.py sets it on the model)."""
+    return max(lens.pin_w for lens in LENSES.values()), max(lens.pin_h for lens in LENSES.values())
 
 
 class SimCameras:
@@ -95,23 +96,6 @@ class SimCameras:
         cid = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_CAMERA, CAM_IN_MODEL[cam])
         R = d.cam_xmat[cid].reshape(3, 3)
         return -((np.atleast_2d(pts_world) - d.cam_xpos[cid]) @ R)[:, 2]
-
-    def true_box(self, d, cam, geom_id, ids=None):
-        """(x0, y0, x1, y1) around a geom's visible pixels and its pixel count, or (None, 0) if hidden."""
-        import cv2
-        ids = self.ids(d, cam) if ids is None else ids
-        # ⚠️ The offscreen buffer is multisampled, so the segmentation render blends ids at object
-        # edges: two neighbouring fruits' ids average to a third geom's id, scattering 1-2 px of
-        # "target" across the truss (seed 8: a 23 px fruit got a 107 px box). Keep the target's real
-        # blobs only, i.e. connected pieces at least a quarter the size of the biggest (a stem in
-        # front can split the fruit in two).
-        n, lab, stats, _ = cv2.connectedComponentsWithStats((ids == geom_id).astype(np.uint8), connectivity=8)
-        if n <= 1:
-            return None, 0
-        area = stats[1:, cv2.CC_STAT_AREA]
-        keep = 1 + np.nonzero(area >= max(area.max() / 4, 1))[0]
-        ys, xs = np.nonzero(np.isin(lab, keep))
-        return (int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())), len(xs)
 
     def project(self, d, cam, pts_world):
         """World points -> pixels in this camera's 640x480 frame (NaN behind it)."""

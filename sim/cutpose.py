@@ -43,7 +43,6 @@ import plant as pl
 import scene as sc
 
 ARM5 = sc.ARM_JOINTS        # shoulder_pan .. wrist_roll
-UP = np.array([0.0, 0.0, 1.0])
 # Residual weights, m per unit. Position is 1. W_LEAN on the hinge's vertical part (flush: the blade leaning
 # into the stem), W_DIR on the hinge vs the petiole's direction (flush: its level part, so twist; square: the
 # whole tilt). 0.01: a 1 mm miss costs as much as ~6 deg of twist, so the solver keeps the cut point and gives
@@ -78,9 +77,6 @@ class CutPose:
     R: np.ndarray           # gripper rotation (world)
     mode: str
     face: int = 1           # which blade pair is next to the stem (scene.BLADE_PAIRS)
-
-    def q_dict(self):
-        return dict(zip(ARM5, map(float, self.q)))
 
 
 def tool_point(petiole_r, clearance=APPROACH_CLEARANCE, face=1):
@@ -175,7 +171,8 @@ class CutIK:
         miss += abs((d @ n if g["mode"] == "flush" else along) - g["dist"])
         nl = np.array([n[0], n[1], 0.0])
         twist = np.degrees(np.arccos(np.clip(nl @ g["a_lvl"] / max(np.linalg.norm(nl), 1e-9), -1, 1)))
-        return CutPose(q=np.asarray(x, float), pos_err=float(miss), lean_deg=float(np.degrees(np.arcsin(np.clip(n[2], -1, 1)))),
+        return CutPose(q=np.asarray(x, float), pos_err=float(miss),
+                       lean_deg=float(np.degrees(np.arcsin(np.clip(n[2], -1, 1)))),
                        pitch_deg=float(np.degrees(np.arcsin(np.clip(-R[2, 2], -1, 1)))),
                        twist_deg=float(twist), tilt_deg=float(np.degrees(np.arccos(np.clip(n @ g["a"], -1, 1)))),
                        fingers=-R[:, 2], R=R, mode=g["mode"], face=g["face"])
@@ -204,7 +201,8 @@ class CutIK:
             cost = np.linalg.norm(tips - T, axis=1) + W_DIR * np.linalg.norm(self.R[:, :, 1] - hinge, axis=1)
             if f is not None:
                 cost += W_FINGERS * np.linalg.norm(-self.R[:, :, 2] - f, axis=1)
-            starts = ([np.asarray(x0, float)] if x0 is not None else []) + [self.Q[i] for i in np.argsort(cost)[:STARTS]]
+            starts = (([np.asarray(x0, float)] if x0 is not None else [])
+                      + [self.Q[i] for i in np.argsort(cost)[:STARTS]])
             mine = []
             for x in starts:
                 p = self.pose(self._lm(x.copy(), g), g)

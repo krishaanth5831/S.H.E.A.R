@@ -19,7 +19,7 @@ from dataclasses import dataclass
 import mujoco
 import numpy as np
 
-G = 9.81
+G = 9.81                  # m/s^2
 
 # --- plant sizes. ⚠️ All unverified guesses until measured on real plants (SHEAR Sim Plan, "Measure first") ---
 STEM_R = 0.006            # 12 mm stem in the deleafing band, guess (unverified)
@@ -108,8 +108,8 @@ class LeafParams:
     # (TOMATO_* below): oval leaflets angled toward the tip, growing toward it, small ones in between.
     style: str = "plate"
     mid_r: float = MID_R                  # midrib radius
-    # Petiole bending: None = rigid (step 1). True = a ball joint at the stem surface with the bending
-    # stiffness of a solid green rod (petiole_k), so a blade can push the petiole onto the other edge.
+    # Petiole bending: False = rigid (step 1). True = a ball joint at the stem surface with the bending
+    # stiffness of a solid green rod (PETIOLE_E), so a blade can push the petiole onto the other edge.
     bend: bool = False
 
 
@@ -292,11 +292,11 @@ def leaf_xml(p, S, a, params=None, stem_pos=None, stem_r=STEM_R, stem="stem"):
                                 base=np.asarray(S, float) + a * r_s)
 
 
-def plant_xml(S, a, leaf_len=LEAF_LEN, params=None, stem_r=STEM_R):
+def plant_xml(S, a, params=None, stem_r=STEM_R):
     """Steps 1 and 3: the stem through S and one leaf. S: point on the stem axis where the petiole axis meets
     it. a: petiole direction, away from the stem. params: the leaf's LeafParams (default: step 1's leaf)."""
     stem_pos = np.array([S[0], S[1], 0.5 * (STEM_Z[0] + STEM_Z[1])])
-    leaf, stub, eq, where = leaf_xml("", S, a, params or LeafParams(length=leaf_len), stem_pos, stem_r)
+    leaf, stub, eq, where = leaf_xml("", S, a, params or LeafParams(), stem_pos, stem_r)
     stem, _ = stem_xml(S[:2], stem_r=stem_r, inner=stub)
     return stem + leaf, eq, where
 
@@ -309,10 +309,9 @@ class Cutter:
     stem. ⚠️ Both pairs press the same petiole, so they share the jaw's squeeze.
 
     Per step it also keeps: squeeze (the weaker edge of the hardest-pressing pair), squeezes (per pair),
-    pad_squeeze (same for
-    the finger pads), stem_force (any robot part pressing the stem) and weld_force (what the leaf pulls
-    on the stem with), plus their peaks. ⚠️ It edits the model when it cuts (collision bits, the stub
-    geom); reset() puts the model back.
+    pad_squeeze (same for the finger pads), stem_force (any robot part pressing the stem) and weld_force (what
+    the leaf pulls on the stem with), plus their peaks (peak, peak_pairs). ⚠️ It edits the model when it cuts
+    (collision bits, the stub geom); reset() puts the model back.
     """
 
     def __init__(self, m, d, where, cut_force=CUT_FORCE_N):
@@ -351,7 +350,6 @@ class Cutter:
         self.squeeze = self.pad_squeeze = self.stem_force = self.weld_force = 0.0
         self.peak = dict(squeeze=0.0, pad_squeeze=0.0, stem_force=0.0, weld_force=0.0)
         self.peak_pairs = [0.0] * len(self.pairs)
-        self.peak_edges = {}
         self.blade_touch = False
 
     @property
@@ -383,8 +381,6 @@ class Cutter:
                 pad[self.pads[other]] += fn
         self.squeezes = [min(edge[f], edge[mv]) for f, mv in self.pairs]
         self.peak_pairs = [max(p_, s_) for p_, s_ in zip(self.peak_pairs, self.squeezes)]
-        for b, fb in edge.items():
-            self.peak_edges[b] = max(self.peak_edges.get(b, 0.0), fb)
         self.squeeze, self.pad_squeeze, self.stem_force = max(self.squeezes), min(pad), stem
         self.weld_force = 0.0
         if self.attached:
@@ -437,7 +433,7 @@ class Cutter:
         m.geom_group[self.stub_geom] = 2
 
     def _cut(self):
-        m, d, w = self.m, self.d, self.where
+        m, d = self.m, self.d
         self._S, self._a = d.xpos[self.leaf].copy(), d.xmat[self.leaf].reshape(3, 3)[:, 0].copy()
         # the stub is the cut nearest the stem among the pairs pressing it
         stubs = {k: self._pair_stub(k) for k, sq in enumerate(self.squeezes) if sq > 0}
@@ -447,8 +443,7 @@ class Cutter:
         # pair first when the fixed jaw is on top, 2026-11-01). The real jaw keeps closing, and the pair nearer the
         # stem then cuts the piece still held by the stem with the jaw's whole squeeze. The sim drops the leaf as
         # one body, so step() counts that second cut when the nearer pair's edges meet.
-        here = min(stubs.values())
-        self.pending = [k for k in range(len(self.pairs)) if k not in stubs and 0 <= self._pair_stub(k) < here]
+        self.pending = [k for k in range(len(self.pairs)) if k not in stubs and 0 <= self._pair_stub(k) < self.stub]
         d.eq_active[self.weld] = 0
         m.geom_contype[self.leaf_geoms], m.geom_conaffinity[self.leaf_geoms] = FALLEN_BITS
         self._draw_stub()

@@ -17,6 +17,7 @@ goes to the servos for one frame. Checks, each PASS/FAIL:
 Reads ~/.cache/huggingface/lerobot/<repo> (the local dataset, never the Hub). Writes nothing. CPU only, no cameras.
 """
 import argparse
+import json
 import os
 import pathlib
 import sys
@@ -33,7 +34,9 @@ import generate_cuts as gc  # noqa: E402
 import rollout_policy as rp  # noqa: E402
 
 REPO = "krish5831/shear_sim_scripted_v1"      # the v3/v3b training set (policy/colab_train_v3.ipynb DATASET)
-TRACK_TOL_NORM = 1.0          # guess, unverified: the replay should follow the recording closely (same physics)
+# Measured 2026-11-08 on the 10 --train-rows episodes: max 0.33-0.71 on 9 (frame 1-2, the first move off the
+# jittered start), 1.28 on episode 129 (frame 208) with its cut still identical. 1.5 = that, plus margin.
+TRACK_TOL_NORM = 1.5
 
 
 def load_episode(root, idx):
@@ -86,14 +89,13 @@ def main():
     ap.add_argument("--windowed", action="store_true", help="watch each replay live in a MuJoCo window")
     a = ap.parse_args()
     from lerobot.utils.constants import HF_LEROBOT_HOME
-    import json
     root = HF_LEROBOT_HOME / a.repo
-    recs = {r["episode_index"]: r for r in map(json.loads, a.log.read_text().splitlines())
+    recs = {r["episode_index"]: r for r in map(json.loads, filter(str.strip, a.log.read_text().splitlines()))
             if r.get("kept") is True and "episode_index" in r}
     eps = a.episodes if a.episodes else [e for _, e, _ in rp.train_rows(a.log, 10)]
     viewer = None
     if a.windowed:
-        # rollout_policy's live window, reused
+        # rollout_policy.windowed's live window (a copy: that one is nested in its function)
         import mujoco.viewer
 
         def viewer(sim):
@@ -127,8 +129,9 @@ def main():
         print(f"{'PASS' if ok else 'FAIL'}: episode {e} (row {seeds[0]}): {len(actions)} frames "
               f"({'=' if same_row else '!='} log {r['frames']}); tracking max {err.max():.2f} mean {err.mean():.3f} "
               f"norm (frame of max {int(err.argmax()) + 1}), start jaw off {jaw0:.2f}; replay cut "
-              f"{res['cut_right']} right + {res['cut_wrong']} wrong (recording: {r['n_cut']}), stubs {res['stubs_mm']} mm, "
-              f"pressed {res['pressed'] or 'nothing'} [{time.time() - t0:.0f} s]", flush=True)
+              f"{res['cut_right']} right + {res['cut_wrong']} wrong (recording: {r['n_cut']}), "
+              f"stubs {res['stubs_mm']} mm, pressed {res['pressed'] or 'nothing'} [{time.time() - t0:.0f} s]",
+              flush=True)
     print(f"\n{'PASS' if n_ok == len(eps) else 'FAIL'}: {n_ok} of {len(eps)} recorded episodes replay to the same cuts")
     return 0 if n_ok == len(eps) else 1
 

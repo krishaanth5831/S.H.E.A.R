@@ -12,6 +12,8 @@ zoomed, leaves numbered, one legend line per leaf: the one to check) and preview
 ⚠️ A pilot only: at most PILOT_MAX frames, no training, nothing pushed (K7 approves the pilot and the dataset
 size first, SHEAR Index 2026-10-28: "no dataset yet"). No domain randomisation yet (light, colours, camera
 pose): that comes with the real set. Claw-camera frames come with step 5, from the cutter's own approach poses.
+⚠️ Since the v1 rig (2026-11-06) the policy records the base camera, not the birdseye (cameras.CAMERAS): these are
+still the mast's birdseye frames.
 
 Run in the lerobot env under the 9 GB cap. Writes only into --out, and refuses a non-empty --out without --overwrite.
 """
@@ -23,7 +25,6 @@ import sys
 
 os.environ.setdefault("MUJOCO_GL", "egl")      # ⚠️ cameras must render through EGL (B.L.U.S.H trap)
 
-import numpy as np  # noqa: E402
 from PIL import Image  # noqa: E402
 
 import check_labels as cl  # noqa: E402

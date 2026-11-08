@@ -1,5 +1,6 @@
 # Lint settings for the whole repo: `ruff check .` (ruff is in the lerobot env).
 line-length = 120
+src = [".", "sim"]          # sim/ scripts import each other as top-level modules: sort them as first-party
 
 [lint]
 select = ["E", "F", "W", "B", "I"]
@@ -7,3 +8,8 @@ ignore = [
     "E731",   # named lambdas are used on purpose for short reference curves (cutter.py play/route)
     "B905",   # zip(strict=...) would raise where the code relies on the shorter sequence
 ]
+
+[lint.per-file-ignores]
+# Notebook cells: long command lists, a module import next to the function that uses it, and short one-line loops
+# read better as they are than reflowed.
+"*.ipynb" = ["E501", "E402", "E702", "E741"]

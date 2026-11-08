@@ -9,7 +9,7 @@
 
 Checks:
 - the rule's golden cases (rule/check_rule.py: hand-built stems, cuts worked out by hand)
-- over many seeds (no physics): the plant keeps three leaves per truss; every cut is a present band leaf
+- over many seeds (no physics): the plant keeps its profile's leaves per truss; every cut is a present band leaf
   below the strip line, oldest first, within the pass cap and the keep guard; flags are yellow/diseased
   leaves above the line; and the labels vary (no cuts, some cuts, full cap, guard, young crop, flags)
 - a few seeds built in MuJoCo: compiles inside the geom budget with the arm, every leaf and fruit settles,
@@ -28,13 +28,12 @@ import time
 import mujoco
 import numpy as np
 
-import plant as pl
 import scene as sc
 import stemgen as sg
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from rule import check_rule  # noqa: E402
-from rule.select_leaves import LEAF, PRESENT, TRUSS, GREEN  # noqa: E402
+from rule.select_leaves import GREEN, LEAF, PRESENT, TRUSS  # noqa: E402
 
 N_SEEDS = 400          # property checks (rule + generator only, fast)
 PHYS_SEEDS = {"dwarf_cherry": (0, 1, 2, 3, 4, 5), "highwire": (0, 1)}
@@ -136,7 +135,8 @@ def property_checks(report, profile):
                  "keep guard broken", "a flag that isn't yellow/diseased above the line"):
         seeds = bad.get(name, [])
         report(not seeds, f"{profile}: {N_SEEDS} plants, never {name}" + (f": seeds {seeds[:8]}" if seeds else ""))
-    need = ("0 cuts", ">=1 cut", "full cap", "guard bites", "cap bites", "flags", "young crop", "missed leaf below a scar")
+    need = ("0 cuts", ">=1 cut", "full cap", "guard bites", "cap bites", "flags", "young crop",
+            "missed leaf below a scar")
     missing = [k for k in need if stats[k] == 0]
     report(not missing, f"{profile}: labels vary across seeds: " + ", ".join(f"{k} {stats[k]}" for k in need)
            + (f" (never: {missing})" if missing else ""))
@@ -149,15 +149,15 @@ def physics_checks(report, profile):
         spec = sg.make_plant(seed, profile)
         t0 = time.time()
         m, d, where = build(spec)
-        sel = sg.label(spec)
         total = m.ngeom - 1 + n_arm               # floor counted once (arm model has none)
-        report(total <= sg.GEOM_BUDGET, f"{profile} seed {seed}: compiles, {m.ngeom - 1} plant geoms + {n_arm} arm = {total} "
-               f"(soft budget {sg.GEOM_BUDGET}); {len(where)} leaves, "
+        report(total <= sg.GEOM_BUDGET, f"{profile} seed {seed}: compiles, {m.ngeom - 1} plant geoms + {n_arm} arm "
+               f"= {total} (soft budget {sg.GEOM_BUDGET}); {len(where)} leaves, "
                f"{sum(1 for i in spec.truss)} trusses, {m.nbody} bodies")
         names = [m.geom(g).name for g in range(m.ngeom) if m.geom(g).name != "floor"]
         unclassed = [g for g in names if sg.seg_class(g) is None]
+        truss_part = ("rachis", "calyx", "pedicel", "fruit")
         wrong_node = [g for g in names if sg.seg_class(g) not in sg.NODELESS and (sg.node_of(g) is None or
-                      (spec.nodes[sg.node_of(g)].kind == TRUSS) != (sg.seg_class(g) in ("rachis", "calyx", "pedicel", "fruit")))]
+                      (spec.nodes[sg.node_of(g)].kind == TRUSS) != (sg.seg_class(g) in truss_part))]
         report(not unclassed and not wrong_node, f"seed {seed}: every geom has a segmentation class and its node "
                f"({len(names)} geoms; unclassed {unclassed[:3]}, wrong node {wrong_node[:3]})")
         offs = [abs(np.linalg.norm(np.asarray(spec.nodes[i].point)[:2] - np.asarray(sg.STEM_XY)) - spec.stem_r)
@@ -190,8 +190,9 @@ def physics_checks(report, profile):
                f"seed {seed}: settles in {SETTLE_S:.0f} s: leaf bases {v_leaf:.4f} m/s, midrib hinges {w_hinge:.4f} "
                f"rad/s, fruit {v_fruit:.4f} m/s, welds {welds[0]}/{welds[1]} on ({time.time() - t0:.1f} s wall)")
         report(max(drift, default=0) < POINT_TOL and all(t < 0 for t in tips),
-               f"seed {seed}: label cut points match the settled petioles (worst {max(drift, default=0) * 1e3:.2f} mm); "
-               f"every leaf droops below a straight leaf ({-max(tips, default=0) * 100:.0f} to {-min(tips, default=0) * 100:.0f} cm)")
+               f"seed {seed}: label cut points match the settled petioles "
+               f"(worst {max(drift, default=0) * 1e3:.2f} mm); every leaf droops below a straight leaf "
+               f"({-max(tips, default=0) * 100:.0f} to {-min(tips, default=0) * 100:.0f} cm)")
         report(not on_floor, f"seed {seed}: nothing on the floor" + (f": {on_floor[:4]}" if on_floor else ""))
 
 

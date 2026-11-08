@@ -1,18 +1,26 @@
 #!/usr/bin/env bash
-# train_smolvla_lora.sh: SmolVLA fine-tuned with LoRA on SHEAR's scripted sim passes, on the laptop GPU
-# (K7 2026-11-04). Adapted from B.L.U.S.H harvest/scripts/train_smolvla.sh.
-#   policy/train_smolvla_lora.sh smoke    a few steps: memory and speed on the 6 GB RTX 1000 Ada
-#   policy/train_smolvla_lora.sh full     the LoRA run (v0)
-#   policy/train_smolvla_lora.sh expert   no LoRA: the whole action expert (v1); expert-smoke first
+# train_smolvla_lora.sh: SmolVLA fine-tuned on SHEAR's scripted sim passes, on the laptop GPU (K7 2026-11-04).
+# Started as the LoRA run (hence the name), then grew the later laptop recipes. Adapted from B.L.U.S.H
+# harvest/scripts/train_smolvla.sh.
+#   policy/train_smolvla_lora.sh smoke       a few steps: memory and speed on the 6 GB RTX 1000 Ada
+#   policy/train_smolvla_lora.sh full        the LoRA run (v0)
+#   policy/train_smolvla_lora.sh expert      no LoRA: the whole action expert (v1); expert-smoke first
+#   policy/train_smolvla_lora.sh expert-v2   v1 continued with the DAgger corrections (v2)
+#   policy/train_smolvla_lora.sh v3          the expert + the vision encoder on the v1 rig's data; v3-smoke first
 # Run outside Claude Code's sandbox (the GPU isn't visible inside it), in the lerobot env.
-# v3 on Google Colab (T4, 16 GB) instead of the laptop: policy/colab_train_v3.ipynb (same recipe, checkpoints on the Hub,
-# resumes after a dead session). Open: https://colab.research.google.com/github/krishaanth5831/S.H.E.A.R/blob/dev/policy/colab_train_v3.ipynb
+# ⚠️ From v3 on, training moved to a free T4 (Colab or Kaggle): policy/colab_train_v3.ipynb. That notebook is the
+# current recipe: it trained v3 (batch 8 x 4, fp16, a checkpoint every 5k on the Hub as krish5831/shear_smolvla_v3,
+# resumes after a dead session; its train_config.json says so) and v3b (warm start from v3 step 50k, its own LR
+# schedule, seed 2000). The v3 mode below has none of that (batch 4 x 8, no fp16, local checkpoints every 10k).
+# The rollouts use outputs/train/shear_smolvla_v3_hub/checkpoints/050000/pretrained_model, downloaded from the Hub. This script stays as the record of the laptop runs (v0, v1, v2, the v3 smoke).
+# Open: https://colab.research.google.com/github/krishaanth5831/S.H.E.A.R/blob/dev/policy/colab_train_v3.ipynb
 set -euo pipefail
 cd "$(dirname "$0")/.."
-DATASET=krish5831/shear_sim_scripted_v0        # 200 passes, local + private on the Hub
+DATASET=krish5831/shear_sim_scripted_v0        # 200 passes on the v0 rig (birdseye + claw), local + private on the Hub
 OUT=outputs/train
-# ⚠️ SmolVLA's base expects its own camera keys (camera1..3, lerobot/smolvla_base config.json). The birdseye is
-# the overview, the claw the wrist view. The SAME map must go to any rollout of the trained policy.
+# ⚠️ SmolVLA's base expects its own camera keys (camera1..3, lerobot/smolvla_base config.json). In the v0 dataset the
+# birdseye is the overview, the claw the wrist view (v3 maps the v1 rig's base camera instead: RENAME_V1). The SAME
+# map must go to any rollout of the trained policy.
 RENAME_MAP='{"observation.images.birdseye": "observation.images.camera1", "observation.images.claw": "observation.images.camera2"}'
 # LoRA: the backbone stays frozen, so it fits the 6 GB card (lerobot-train --peft.*; smoke: batch 4 = 1.7 GB,
 # 0.19 s/step). lerobot's default SmolVLA targets: the action expert's q/v projections + state/action projections.
@@ -52,8 +60,8 @@ case "${1:-}" in
   # v3 (K7 2026-11-06): the v1 rig's dataset (base camera + claw, generate_episodes.py REPO_ID v1), the action expert
   # AND the vision encoder trained (--policy.freeze_vision_encoder=false; needs policy/patch_lerobot_smolvla.py run once
   # on the installed lerobot: otherwise train_expert_only freezes the vision encoder too, and the bf16 weights break
-  # --accelerator.mixed_precision=fp16), the language
-  # layers frozen, 100k steps (K7's call; Dream Machines saw a plateau past 30k, so a checkpoint every 10k and the
+  # --accelerator.mixed_precision=fp16, which the notebook passes and this mode doesn't), the language layers
+  # frozen, 100k steps (K7's call; Dream Machines saw a plateau past 30k, so a checkpoint every 10k and the
   # pick is by rollout cuts, not loss). DATASET_V3 / RENAME_V3 override the dataset and its camera map (the smoke
   # ran on v0 before v1 existed: DATASET_V3=krish5831/shear_sim_scripted_v0 RENAME_V3="$RENAME_MAP").
   v3-smoke | v3)
@@ -68,5 +76,5 @@ case "${1:-}" in
       lerobot-train "${V3[@]}" --steps="${STEPS:-100000}" --save_freq=10000 --log_freq=50 --num_workers=8 \
         --output_dir=$OUT/shear_smolvla_v3 --job_name=shear_smolvla_v3
     fi ;;
-  *) echo "usage: $0 smoke | full | expert-smoke | expert | expert-v2 | v3-smoke | v3   (full: LoRA, BATCH=16 STEPS=20000; expert: BATCH=8 ACCUM=4 STEPS=40000; expert-v2: from v1, STEPS=20000)"; exit 1 ;;
+  *) echo "usage: $0 smoke | full | expert-smoke | expert | expert-v2 | v3-smoke | v3   (full: LoRA, BATCH=16 STEPS=20000; expert: BATCH=8 ACCUM=4 STEPS=40000; expert-v2: from v1, STEPS=20000; v3: BATCH=4 ACCUM=8 STEPS=100000)"; exit 1 ;;
 esac
