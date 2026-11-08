@@ -7,9 +7,9 @@ cut generator (B.L.U.S.H hardware/greenhouse/lasercut/greenhouse_lasercut.py, mm
 three vine rows at y = +0.4 / 0 / -0.4, end frames at x = 0 and 0.74, crop rails at z = 0.52 that the
 vines hang from, anchor rails along the floor under each row.
 
-Changed from B.L.U.S.H: the camera mast is left out (SHEAR's birdseye sits elsewhere, layout.py), and the
-frame uses plant.FLOOR_BITS, so it touches the robot and the plants. With MuJoCo's default bits it would be
-SHEAR's robot bit.
+Changed from B.L.U.S.H: the camera mast is left out (SHEAR places its own cameras and their mounts, layout.py),
+and the frame uses plant.FLOOR_BITS, so it touches the robot and the plants. With MuJoCo's default bits it would
+be SHEAR's robot bit.
 """
 import numpy as np
 
@@ -27,7 +27,6 @@ ROOF_DEG = 15.0
 KEYHOLE_OFF = 0.015              # vines hang from keyholes 15 mm off the row line, on the aisle side
 PLY_RGBA = "0.82 0.70 0.52 1"    # birch ply, guess (unverified)
 ANCHOR_TOP = ANCHOR_WEB_H + T    # top of a row's anchor rail: where a stem starts
-
 
 # The roof (rafters, king posts, ridge) is in geom group 1, so a top-down picture can hide it.
 ROOF_GROUP = 1
@@ -55,12 +54,14 @@ def greenhouse_xml():
         for s in (1, -1):
             half = np.hypot(yo, apex - BAND[1]) / 2
             g.append(f'<geom name="gh_ef{k}_rafter{s:+d}" type="box" pos="{x0 + T/2:.4f} {s*yo/2:.4f} '
-                     f'{(BAND[1]+apex)/2:.4f}" size="{T/2:.4f} {half:.4f} 0.02" euler="{-s*np.radians(ROOF_DEG):.4f} 0 0" '
-                     f'rgba="{PLY_RGBA}" group="{ROOF_GROUP}" contype="{pl.FLOOR_BITS[0]}" conaffinity="{pl.FLOOR_BITS[1]}"/>')
+                     f'{(BAND[1]+apex)/2:.4f}" size="{T/2:.4f} {half:.4f} 0.02" '
+                     f'euler="{-s*np.radians(ROOF_DEG):.4f} 0 0" rgba="{PLY_RGBA}" group="{ROOF_GROUP}" '
+                     f'contype="{pl.FLOOR_BITS[0]}" conaffinity="{pl.FLOOR_BITS[1]}"/>')
     for j, r in enumerate(ROWS):                     # crop rails (T: flange under, web on top) + anchor rails
         g.append(_box(f"gh_crop{j}_flange", (0, r - FLANGE_W / 2, CROP_Z), (HOUSE_L, r + FLANGE_W / 2, CROP_Z + T)))
         g.append(_box(f"gh_crop{j}_web", (0, r - T / 2, CROP_Z + T), (HOUSE_L, r + T / 2, CROP_Z + T + WEB_H)))
         g.append(_box(f"gh_anchor{j}_web", (0, r - T / 2, 0), (HOUSE_L, r + T / 2, ANCHOR_WEB_H)))
-        g.append(_box(f"gh_anchor{j}_flange", (0, r - FLANGE_W / 2, ANCHOR_WEB_H), (HOUSE_L, r + FLANGE_W / 2, ANCHOR_TOP)))
+        g.append(_box(f"gh_anchor{j}_flange", (0, r - FLANGE_W / 2, ANCHOR_WEB_H),
+                      (HOUSE_L, r + FLANGE_W / 2, ANCHOR_TOP)))
     g.append(_box("gh_ridge", (0, -0.02, apex - 0.055), (HOUSE_L, 0.02, apex - 0.015), group=ROOF_GROUP))
     return "\n".join(g)

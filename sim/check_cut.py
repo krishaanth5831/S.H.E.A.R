@@ -118,18 +118,23 @@ def run_checks(cut_force, leaf_len):
         if not c["cut"]:
             continue
         report(abs(c["stub"] - off) <= STUB_TOL, f"stub {c['stub'] * 1000:.2f} mm for a blade placed "
-                                                 f"{off * 1000:.0f} mm off the stem (tolerance {STUB_TOL * 1000:.0f} mm)")
+                                                 f"{off * 1000:.0f} mm off the stem "
+                                                 f"(tolerance {STUB_TOL * 1000:.0f} mm)")
         if off == 0.002:
-            report(c["leaf_drop"] > 0.05 and not c["attached"], f"the cut leaf falls clear: dropped {c['leaf_drop'] * 100:.0f} cm")
-            report(c["gap"] < 0.0005, f"the jaw closes through the cut: edges {c['gap'] * 1000:.2f} mm apart at the end")
+            report(c["leaf_drop"] > 0.05 and not c["attached"],
+                   f"the cut leaf falls clear: dropped {c['leaf_drop'] * 100:.0f} cm")
+            report(c["gap"] < 0.0005,
+                   f"the jaw closes through the cut: edges {c['gap'] * 1000:.2f} mm apart at the end")
             report(c["stem_force_peak"] < STEM_TOUCH_N,
                    f"gripper on the stem: peak {c['stem_force_peak']:.2f} N (limit {STEM_TOUCH_N} N). Load from "
-                   f"the leaf on the stem peaked at {c['weld_force_peak']:.1f} N, mostly the blade landing on a rigid petiole")
+                   f"the leaf on the stem peaked at {c['weld_force_peak']:.1f} N, mostly the blade landing on a "
+                   f"rigid petiole")
 
     low = run(cut_force=T, torque=sc.GRIPPER_TORQUE_STALLED)
     report(not low["cut"], f"25 % torque: the blades settle at {low['squeeze_ss']:.1f} N, under the {T:.1f} N cut "
-                           f"force. Their {low['squeeze_peak']:.0f} N landing spike stays over it {low['longest_over'] * 1000:.0f} ms, "
-                           f"short of the {pl.CUT_DWELL_S * 1000:.0f} ms stroke: no cut")
+                           f"force. Their {low['squeeze_peak']:.0f} N landing spike stays over it "
+                           f"{low['longest_over'] * 1000:.0f} ms, short of the {pl.CUT_DWELL_S * 1000:.0f} ms "
+                           f"stroke: no cut")
     pad = run(cut_force=T, shift=PAD_SHIFT)
     report(not pad["cut"] and not pad["blade_touch"] and pad["pad_squeeze_peak"] > T,
            f"petiole behind the blades: the pads squeeze it with {pad['pad_squeeze_peak']:.1f} N (over the "
@@ -156,7 +161,8 @@ def windowed(offset, cut_force, torque, leaf_len):
     jaw = m.actuator("arm/gripper").id
     cycle = SETTLE_S + CLOSE_S + HOLD_S + 1.5
     print(f"Blade plane {offset * 1000:.0f} mm off the stem, cut force {cut_force:.1f} N per edge (unverified), "
-          f"gripper torque {torque:.2f} N.m.\nThe jaw closes {SETTLE_S:.0f} s in; every {cycle:.0f} s it starts over.\n")
+          f"gripper torque {torque:.2f} N.m.\n"
+          f"The jaw closes {SETTLE_S:.0f} s in; every {cycle:.0f} s it starts over.\n")
     last = 0.0
     with mujoco.viewer.launch_passive(m, d) as v:
         v.cam.lookat[:] = info["B"]

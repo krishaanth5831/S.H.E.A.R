@@ -1,6 +1,6 @@
 """Step 5 of the SHEAR sim plan: the scripted cutter. One episode is one deleafing pass along the row.
 
-    scn = Scene(seeds, turns)                   the row (layout.py, bending petioles), settled with the arm at START
+    scn = Scene(seeds, turns)                   the row (layout.py, bending petioles), settled at the start pose
     out = run_pass(scn, rng, frame_cb)          start pose -> every leaf the rule cuts, plant by plant -> start pose
     out["cuts"], out["skipped"], out["verdict"] the judge, per cut and for the pass
 
@@ -14,8 +14,9 @@ One cut:
    the fingers. K7 2026-11-01: every arm move is planned with RRT, around what it mustn't damage. It keeps
    CLEARANCE from stems, pots and the frame (never touched) and SOFT_CLEARANCE from fruit and truss stalks (always
    avoided on a route), and from the stiff parts (petiole, midrib) of the leaves the rule keeps. Leaflets give way
-   and may be pushed. If no route clears the kept leaves, one that may brush them is taken, and the cut says so. The blades never come within
-   2 mm of a truss stalk: a blade there can cut the truss off; a finger pad resting on it doesn't.
+   and may be pushed. If no route clears the kept leaves, one that may brush them is taken, and the cut says so.
+   The blades never come within 2 mm of a truss stalk: a blade there can cut the truss off; a finger pad resting
+   on it doesn't.
    ⚠️ What each of those choices fixed (2026-11-01): with leaflets as obstacles, no route on a dense dwarf
    cleared them; with truss stalks never-touch for the whole arm, a truss drooping across the cut point
    blocked most cuts; with fruit never-touch, no plant in 40 had a slide in that missed every fruit. A fruit
@@ -48,7 +49,7 @@ import rrt
 import scene as sc
 import stemgen as sg
 
-FPS = 30                          # config/hardware.env: every dataset records at 30 fps (as B.L.U.S.H)
+FPS = 30                          # B.L.U.S.H config/hardware.env: every dataset records at 30 fps
 # The robot's start pose, the same as B.L.U.S.H's episodes (sim/scene.py START_NORM, commit 41da64d), in lerobot
 # units: folded low beside its base, turned away from the row. Clear of everything in this greenhouse too (checked
 # 2026-11-03). Every pass starts and ends here (K7 2026-11-03).
@@ -93,8 +94,8 @@ HARD_CLASSES = {"stem": "stem", "pot": "pot", "rachis": "truss stalk", "pedicel"
 
 
 class Scene:
-    def __init__(self, seeds, turns=None, settle=True, domain_rand=False):
-        """settle=False skips the 3 s settle (generate_cuts.best_turns' quick search; the leaves then hang as built).
+    def __init__(self, seeds, turns=None, domain_rand=False):
+        """The row built from seeds (pots turned by turns), the arm at the start pose, settled for SETTLE_S.
         domain_rand: lighting, colours and camera poses drawn from the first seed (randomize.py), in self.dr."""
         self.seeds, self.turns = seeds, turns
         self.m, self.d, self.info = lo.build(seeds, bend=True, turns=turns)
@@ -108,7 +109,7 @@ class Scene:
         d.qpos[self.arm_adr], d.ctrl[self.act] = self.home, self.home
         d.qpos[self.jaw_adr] = d.ctrl[self.jaw_act] = JAW_CLOSED
         mujoco.mj_forward(m, d)
-        for _ in range(round(SETTLE_S / m.opt.timestep) if settle else 0):
+        for _ in range(round(SETTLE_S / m.opt.timestep)):
             mujoco.mj_step(m, d)
         self.ik = cp.CutIK(base=self.info["arm_base"], yaw=self.info["arm_yaw"])
         names = [m.geom(g).name or "" for g in range(m.ngeom)]
@@ -225,7 +226,8 @@ def plan_cut(scn, rng, plant=0, only=None, q_from=None, route=True):
                 continue
             # on the short slide a finger pad may rest on a fruit or a truss stalk (firm=False); blades never do
             if not chk.path_ok(slide, soft=False, firm=False, clearance=SLIDE_CLEARANCE, ignore=target):
-                why = f"the slide in would hit {sorted(chk.hits(slide[-1], soft=False, firm=False, clearance=SLIDE_CLEARANCE, ignore=target))[:3]}"
+                hit = chk.hits(slide[-1], soft=False, firm=False, clearance=SLIDE_CLEARANCE, ignore=target)
+                why = f"the slide in would hit {sorted(hit)[:3]}"
                 continue
             caught = _jaw_catches(scn, chk, slide[-1], target)
             if caught:
@@ -366,7 +368,7 @@ class Episode:
 
     def cut(self, plan):
         """One cut, judged on its own."""
-        scn, d = self.scn, self.scn.d
+        scn = self.scn
         key = (plan.plant, plan.node)
         self.target = key
         self.mon.reset(plan.prefix)
@@ -485,5 +487,5 @@ def run_pass(scn, rng, frame_cb=None, plants=(0, 1, 2), start_jitter_deg=0.0):
     ep.hold("end", HOLD_S)
     ok = bool(cuts) and all(c["verdict"] == "PASS" for c in cuts) and not end["pressed"]
     return dict(verdict="PASS" if ok else "FAIL", cuts=cuts, skipped=skipped, back_to_start=end,
-                n_cut=sum(c["verdict"] == "PASS" for c in cuts), n_rule=sum(len(sg.label(scn.info["specs"][k]).cuts) for k in plants),
-                seconds_sim=round(ep.t, 1))
+                n_cut=sum(c["verdict"] == "PASS" for c in cuts),
+                n_rule=sum(len(sg.label(scn.info["specs"][k]).cuts) for k in plants), seconds_sim=round(ep.t, 1))

@@ -1,6 +1,7 @@
-# patch_lerobot_smolvla.py: S.H.E.A.R's edits to the INSTALLED lerobot's SmolVLA (K7 2026-11-06). The Colab notebook
-# (policy/colab_train_v3.ipynb, cell 3) runs this same code; on the laptop: python policy/patch_lerobot_smolvla.py
-# in the lerobot env. Pinned lerobot commit: 5aa74557 (the anchors below are checked against it).
+# patch_lerobot_smolvla.py: S.H.E.A.R's edits to the INSTALLED lerobot's SmolVLA (K7 2026-11-06). The Colab/Kaggle
+# notebook (policy/colab_train_v3.ipynb, cell 3) embeds this same code, from the next line down; on the laptop:
+# python policy/patch_lerobot_smolvla.py in the lerobot env. It rewrites the installed lerobot file in place.
+# Pinned lerobot commit: 5aa74557 (the anchors below are checked against it).
 # The SHEAR edits to lerobot's SmolVLA (the same as the laptop's local lerobot, K7 2026-11-06).
 #    a) Upstream, train_expert_only freezes the WHOLE vision-language model, vision encoder included, so
 #       --policy.freeze_vision_encoder=false did nothing. Now the vision encoder trains with the action expert and
@@ -10,6 +11,7 @@
 #       bfloat16 gradients ("not implemented for 'BFloat16'"), and small updates get lost in bfloat16 weights.
 #    Safe to run again: each edit checks whether it is already there.
 import pathlib
+
 import lerobot.policies.smolvla.smolvlm_with_expert as m
 
 PATH = pathlib.Path(m.__file__)

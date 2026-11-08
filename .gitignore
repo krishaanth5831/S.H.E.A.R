@@ -25,3 +25,7 @@ sim/assets/so101/
 sim/plugin/*.egg-info/
 
 .DS_Store
+
+# Empty placeholders the Claude Code sandbox creates in the working directory
+.claude/
+.mcp.json

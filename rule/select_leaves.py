@@ -97,7 +97,7 @@ DECISIONS = {
 
 
 def fill_gaps(nodes, leaves_per_truss=LEAVES_PER_TRUSS):
-    """Step 1. Between two trusses there are LEAVES_PER_TRUSS leaf nodes (present, scar or unknown). If
+    """Step 1. Between two trusses there are leaves_per_truss leaf nodes (present, scar or unknown). If
     fewer show, the missing ones go in as UNKNOWN right above the lower truss. ⚠️ Where they really sit
     isn't known; putting them at the bottom of the gap is the cautious choice: above the anchor they take
     the strip_above_anchor slot, so a visible leaf further up is never over-stripped.

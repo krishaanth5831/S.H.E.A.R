@@ -9,6 +9,9 @@ The arm holds one pose: step 1's ARM_POSE, or (step 3, check_approach.py) a cut 
 pass settles it there and reads where the blades ended up, and the second pass builds the stem and the leaf
 around them.
 
+The arm itself (arm_spec: pads, blades, gripper limits; add_blade_pairs; world_xml) is shared by every scene,
+the greenhouse row too (layout.py).
+
 ⚠️ The arm model needs the SO-ARM100 files: run ./fetch_so101.sh once (sim/assets/so101 is gitignored).
 """
 import functools
@@ -136,10 +139,10 @@ def _slabs(V, axis, start, end, step):
 def jaw_geometry():
     """Measured once on the stock meshes. Gripper body frame unless it says jaw frame.
 
-    tip_z: the fixed fingertip. fixed / moving: finger slabs (gripper / jaw frame). x_meet: where the
-    edges meet. y_blade / y_blade2: the blade planes on the fingertips' -y / +y faces (half a blade outside
-    them). z_blade: the
-    blades' centre along the fingers. p_j, R_j: the jaw body's pose in the gripper frame at q = 0.
+    tip_z: the fixed fingertip. fixed / moving: finger slabs (gripper / jaw frame). q_meet: JAW_MEET_DEG in rad.
+    x_meet: where the edges meet; protrude: how far that stands proud of the fixed fingertip. y_blade / y_blade2:
+    the blade planes on the fingertips' -y / +y faces (half a blade outside them). z_blade: the blades' centre
+    along the fingers. p_j, R_j: the jaw body's pose in the gripper frame at q = 0.
     """
     if not SO101_XML.exists():
         raise FileNotFoundError(f"{SO101_XML} missing: run ./fetch_so101.sh in sim/ first")
@@ -267,11 +270,11 @@ def settled_arm(pose=None, jaw_open_deg=JAW_OPEN_DEG):
     target = dict(zip(ARM_JOINTS, ARM_POSE if pose is None else pose)) | {"gripper": np.radians(jaw_open_deg)}
     for k in range(2 if pose is None else 1):     # settle, level the hinge with the wrist roll, settle again
         if k:
+            R = d.xmat[gb].reshape(3, 3)                            # the gripper after the first settle
             target["wrist_roll"] += np.arctan2(R[2, 1], R[2, 0])    # turns gripper y's lean into gripper x
         _pose_arm(m, d, target)
         for _ in range(round(SETTLE_ARM_S / TIMESTEP)):
             mujoco.mj_step(m, d)
-        R = d.xmat[gb].reshape(3, 3)
     q = {j: float(d.qpos[m.joint("arm/" + j).qposadr[0]]) for j in ARM_JOINTS + ("gripper",)}
     return q, d.xpos[gb].copy(), d.xmat[gb].reshape(3, 3).copy()
 

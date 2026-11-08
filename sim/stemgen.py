@@ -40,8 +40,18 @@ import plant as pl
 import truss as tr
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
-from rule.select_leaves import (DISEASED, GREEN, LEAF, Node, PRESENT, SCAR, TRUSS, YELLOW,  # noqa: E402
-                                Settings, select_leaves)
+from rule.select_leaves import (  # noqa: E402
+    DISEASED,
+    GREEN,
+    LEAF,
+    PRESENT,
+    SCAR,
+    TRUSS,
+    YELLOW,
+    Node,
+    Settings,
+    select_leaves,
+)
 
 STEM_XY = (0.0, 0.0)
 GROUND_Z = 0.036          # top of a greenhouse row's anchor rail (greenhouse.ANCHOR_TOP): pots and stems start here
@@ -329,7 +339,9 @@ def plant_xml(spec, xy=STEM_XY, pp=""):
         elif n.kind == LEAF:
             lp, elev = spec.leaf[i]
             leaf, stub, eq, w = pl.leaf_xml(nid, S, _dir(spec.azimuth[i], elev), lp, stem_pos, spec.stem_r, pp + "stem")
-            bodies.append(leaf); inner.append(stub); eqs.append(eq)
+            bodies.append(leaf)
+            inner.append(stub)
+            eqs.append(eq)
             w["node"] = i
             where[i] = w
             n.point = tuple(w["base"])
@@ -339,12 +351,14 @@ def plant_xml(spec, xy=STEM_XY, pp=""):
             start = S + d * spec.stem_r
             end = start + d * max(1, nf) * P.fruit_pitch
             rachis, fruit, eq, _ = tr.truss_xml(nid, start, end, nf, rng, ripeness=rip, radius=P.fruit_radius)
-            bodies += [rachis, fruit]; eqs.append(eq)
+            bodies += [rachis, fruit]
+            eqs.append(eq)
     stem, _ = pl.stem_xml(xy, spec.stem_z, spec.stem_r, "".join(inner), pp + "stem")
     pot = ""
     if P.pot:
         r, hgt = P.pot
-        pot = (f'<geom name="{pp}pot" type="cylinder" size="{r} {hgt / 2}" pos="{xy[0]} {xy[1]} {GROUND_Z + hgt / 2:.4f}" '
+        pot = (f'<geom name="{pp}pot" type="cylinder" size="{r} {hgt / 2}" '
+               f'pos="{xy[0]} {xy[1]} {GROUND_Z + hgt / 2:.4f}" '
                f'rgba="{POT_RGBA}" contype="{pl.FLOOR_BITS[0]}" conaffinity="{pl.FLOOR_BITS[1]}"/>')
     return pot + stem + "".join(bodies), "".join(eqs), where
 

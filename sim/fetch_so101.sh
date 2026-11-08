@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Fetch the SO-101 MJCF + meshes the sim needs into sim/assets/so101 (gitignored: ~16 MB of STLs).
-# Pinned to the SO-ARM100 commit the fin-ray gripper was built against. Apache-2.0, see NOTICE.md.
+# Pinned to the SO-ARM100 commit B.L.U.S.H built its fin-ray gripper against (SHEAR shares it).
+# Apache-2.0, see NOTICE.md.
 set -euo pipefail
 COMMIT=a758567c3978dfeefe282ede0500085a48fe8f78
 HERE="$(cd "$(dirname "$0")" && pwd)"

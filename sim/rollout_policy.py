@@ -1,25 +1,31 @@
 #!/usr/bin/env python3
 """Roll a trained policy out in the SHEAR sim: does it deleaf new plants the way the scripted cutter does?
 
-  python rollout_policy.py --ckpt ../outputs/train/shear_smolvla_lora_v0/checkpoints/last/pretrained_model --rows 10
+  python rollout_policy.py --ckpt ../outputs/train/shear_smolvla_v3_hub/checkpoints/050000/pretrained_model --rows 10
   python rollout_policy.py ... --no-video
+  python rollout_policy.py --ckpt ... --rtc 10 --rtc-horizon 20 --smooth 0.5   real-time chunking + command smoothing
+  python rollout_policy.py --ckpt ... --n-action-steps 10                     look again every 10 moves, not 50
   python rollout_policy.py --ckpt ... --windowed        watch the policy drive live, row after row (real time)
   python rollout_policy.py --ckpt ... --windowed --rows 1   one row live, then the window closes
   python rollout_policy.py --ckpt ... --start 8 --rows 2 --out <same>   finish an interrupted 10-row test (rows 8-9)
+  python rollout_policy.py --ckpt ... --train-rows ~/.cache/shear_sim/episodes/shear_sim_scripted_v1_<time>.jsonl
+                                  the same test on rows the policy TRAINED on: fails there too = a pipeline bug or
+                                  underfitting; works there but not on new rows = it needs more / more varied data
 
-For each row (new seeds, never in the dataset: SEED_BASE), set up like the training episodes (generate_cuts.best_turns
-pots, domain randomisation), the policy drives the arm from the start pose at 30 fps: every frame it gets the joint
-state (use_degrees=false units), the birdseye and claw frames and the task string, exactly as the dataset recorded
-them, and its action goes to the servos. The episode ends at MAX_S, or once the arm has been back at the start pose
+For each row (new seeds, never in the dataset: SEED_BASE; or, with --train-rows, dataset rows), set up like the
+training episodes (generate_cuts.best_turns pots, domain randomisation), the policy drives the arm from the start pose
+at 30 fps: every frame it gets the joint state (use_degrees=false units), the frames of the dataset's cameras
+(generate_episodes.CAMERAS: base + claw since the v1 rig) and the task string, exactly as the dataset recorded them,
+and its action goes to the servos. The episode ends at MAX_S, or once the arm has been back at the start pose
 for STILL_S after going out.
 
 Judged per row, the same way as the scripted passes (cutter.py): every leaf cut is checked against the rule (a cut the
 rule didn't ask for is a wrong cut), its stub measured, and the peak force of the arm on stems, truss stalks, pots and
 the frame kept. The scripted cutter then runs on the same row as the baseline.
 
-Writes: rollouts.json + rollouts.txt, and rollout_KK.mp4 (side | birdseye | claw, the sim's labels drawn on), into
---out (default ~/.cache/shear_sim/rollouts/<checkpoint name>). Run outside Claude Code's sandbox (the GPU), in the
-lerobot env, under systemd-run MemoryMax.
+Writes: rollouts.json + rollouts.txt, and rollout_KK.mp4 (side | base | claw, the sim's labels drawn on), into
+--out (default ~/.cache/shear_sim/rollouts/<checkpoint step>_<n50 | rtc10h20>[_train]). Run outside Claude Code's
+sandbox (the GPU), in the lerobot env, under systemd-run MemoryMax.
 """
 import argparse
 import json
@@ -46,6 +52,17 @@ STILL_S = 1.5                 # back at the start pose this long (after leaving 
 START_TOL_NORM = 4.0          # "at the start pose": every arm joint within this, norm units
 SMOOTH = 0.0                  # set from --smooth
 LEFT_START_NORM = 15.0        # "has gone out": some arm joint this far from the start pose
+
+
+def train_rows(log_path, n):
+    """n rows the dataset kept (generate_episodes' attempt log), evenly spread over the episodes, hold episodes (the
+    rule cuts nothing) left out. The scene rebuilds the same from the seeds: pots (best_turns, rng from seeds[0]),
+    domain randomisation (seeds[0]). Only the scripted pass's start jitter differs: the rollout starts exactly at
+    the start pose."""
+    recs = [json.loads(ln) for ln in pathlib.Path(log_path).read_text().splitlines() if ln.strip()]
+    kept = [r for r in recs if r.get("kept") is True and not r.get("hold")]
+    pick = [kept[round(i * (len(kept) - 1) / max(n - 1, 1))] for i in range(min(n, len(kept)))]
+    return [(tuple(r["seeds"]), r["episode_index"], r["pot_turns_deg"]) for r in pick]
 
 
 def load_policy(ckpt, device="cuda", n_action_steps=None, rtc_horizon=None):
@@ -123,7 +140,8 @@ def judge(sim):
     pressed = {k: round(v, 1) for k, v in ep.mon.peak.items() if k in ct.FORCE_LIMIT and v > ct.FORCE_LIMIT[k]}
     return dict(rule_cuts=len(rule), cut_right=len(right), cut_clean=len(clean), cut_wrong=len(wrong),
                 wrong=[scn.info["specs"][k].nodes[i].id for k, i in wrong], stubs_mm=stubs, pressed=pressed,
-                blade_on_stalk=round(ep.mon.blade_on_stalk, 1), peaks_n={k: round(v, 2) for k, v in ep.mon.peak.items()})
+                blade_on_stalk=round(ep.mon.blade_on_stalk, 1),
+                peaks_n={k: round(v, 2) for k, v in ep.mon.peak.items()})
 
 
 class RTCDriver:
@@ -260,6 +278,8 @@ def main():
     ap.add_argument("--start", type=int, default=0,
                     help="skip the first N test rows: finishes an interrupted test, keeping its videos")
     ap.add_argument("--no-video", action="store_true")
+    ap.add_argument("--train-rows", type=pathlib.Path, default=None, metavar="ATTEMPT_LOG",
+                    help="test on rows the dataset trained on (generate_episodes' attempt log .jsonl), not new ones")
     ap.add_argument("--windowed", action="store_true", help="watch live in a MuJoCo window (no videos, no baseline)")
     ap.add_argument("--n-action-steps", type=int, default=None,
                     help="moves played per chunk before looking again (default: the checkpoint's, 50)")
@@ -267,12 +287,14 @@ def main():
                     help="real-time chunking: a new chunk every REINFER moves, blended over the old one's rest")
     ap.add_argument("--rtc-horizon", type=int, default=20, help="old-chunk moves the new one is guided toward")
     ap.add_argument("--smooth", type=float, default=0.0, metavar="ALPHA",
-                    help="first-order smoothing of the commands, ALPHA = weight of the new one (SockBot used 0.5); 0 = off")
+                    help="first-order smoothing of the commands, ALPHA = weight of the new one (SockBot used 0.5); "
+                         "0 = off")
     a = ap.parse_args()
     global SMOOTH
     SMOOTH = a.smooth
     ckpt = str(pathlib.Path(a.ckpt).resolve())
     tag = f"rtc{a.rtc}h{a.rtc_horizon}" if a.rtc else f"n{a.n_action_steps or 50}"
+    tag += "_train" if a.train_rows else ""
     out = a.out or pathlib.Path.home() / ".cache" / "shear_sim" / "rollouts" / f"{pathlib.Path(ckpt).parent.name}_{tag}"
     policy, pre, post = load_policy(ckpt, n_action_steps=a.n_action_steps, rtc_horizon=a.rtc_horizon if a.rtc else None)
     driver = RTCDriver(policy, pre, post, a.rtc) if a.rtc else None
@@ -289,12 +311,21 @@ def main():
     print(f"policy {ckpt}\nout {out}", flush=True)
     rows, skipped = [], 0
     k = 0
-    while len(rows) < a.rows and k < 30 * (a.rows + a.start):
-        seeds = tuple(SEED_BASE + 3 * k + j for j in range(3))
+    fixed = train_rows(a.train_rows, a.start + a.rows) if a.train_rows else None
+    while len(rows) < a.rows and k < (len(fixed) if fixed else 30 * (a.rows + a.start)):
+        if fixed:
+            seeds, episode, logged_deg = fixed[k]
+        else:
+            seeds = tuple(SEED_BASE + 3 * k + j for j in range(3))
         k += 1
         rng = np.random.default_rng(seeds[0])
         turns, found = gc.best_turns(seeds, rng)
-        if not any(found):
+        if fixed:
+            # ⚠️ the check that this IS the training row: the pots must turn as they did when it was recorded
+            deg = [round(float(np.degrees(t)) % 360, 1) for t in turns]
+            print(f"{'PASS' if deg == logged_deg else 'FAIL'}: row {seeds[0]} is episode {episode}, pots {deg} "
+                  f"(recorded {logged_deg})", flush=True)
+        elif not any(found):
             continue                                   # the scripted cutter can't do anything here either
         if skipped < a.start:
             skipped += 1
@@ -322,7 +353,8 @@ def main():
         lines.append(f"rollout_{i:02d}.mp4  row {r['row']}: right {r['cut_right']} (stubs {r['stubs_mm']}), wrong "
                      f"{r['cut_wrong']} {r['wrong']}, scripted {r['scripted_cut']}, pressed {r['pressed'] or '-'}, "
                      f"{r['seconds']} s")
-    (out / f"rollouts{suffix}.json").write_text(json.dumps(dict(ckpt=ckpt, rows=rows, totals=tot), indent=1, default=str))
+    (out / f"rollouts{suffix}.json").write_text(json.dumps(dict(ckpt=ckpt, rows=rows, totals=tot), indent=1,
+                                                           default=str))
     (out / f"rollouts{suffix}.txt").write_text("\n".join(lines) + "\n")
     print("\n" + "\n".join(lines))
     return 0

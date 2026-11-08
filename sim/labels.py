@@ -2,7 +2,7 @@
 
     objs = label_frame(m, d, info, cams, "birdseye")     one Obj per leaf, truss, scar and stem in view
     lines = yolo_lines(objs)                            "cls cx cy w h  x0 y0 v0  x1 y1 v1" per object, normalised
-    truth = truth_json(objs, info)                      the 3D points and the rule's decisions, for checks
+    truth = truth_json(objs, info, "birdseye")          the 3D points and the rule's decisions, for checks
 
 What the rule needs from vision (rule/select_leaves.py takes the stem's nodes bottom-up: kind, leaf state and
 health, truss stage), and what the cut needs (the cut point and the petiole's direction, cutpose.py):
@@ -23,7 +23,7 @@ no nearer than VIS_TOL in front of the point.
 An object is labelled when at least MIN_PX of its own pixels are in the frame (segmentation).
 """
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -40,7 +40,6 @@ KPT_ALONG = 0.015        # m, keypoint 1 along the organ (a few px from keypoint
 VIS_TOL = 0.004
 MIN_PX = 15              # an object with fewer visible pixels isn't labelled (guess, unverified)
 SCAR_MIN_PX = 3          # a scar is tiny: 1.5 mm proud, ~3 mm across, so a few px in the birdseye
-TRUSS_PARTS = ("rachis", "pedicel", "calyx", "fruit")
 
 
 @dataclass
@@ -53,7 +52,6 @@ class Obj:
     kpts: np.ndarray            # (2, 3): u, v, visibility 0/1/2
     pts: np.ndarray             # (2, 3): the keypoints in the world (m)
     decision: str = ""          # leaves: the rule's decision on sim truth (cut / keep / flag / guard / cap / ...)
-    extra: dict = field(default_factory=dict)
 
 
 def _dir(phi, elev):
@@ -102,7 +100,7 @@ def label_frame(m, d, info, cams, cam, ids=None, depth=None):
     lens = LENSES[cam]
     ids = cams.ids(d, cam) if ids is None else ids
     depth = cams.depth(d, cam) if depth is None else depth
-    owner, gcls = geom_owner(m)
+    owner, _ = geom_owner(m)
     # (plant, node) -> pixel mask, via a per-geom key table
     keys = sorted({o for o in owner if o is not None})
     kid = {k: n + 1 for n, k in enumerate(keys)}
@@ -167,7 +165,8 @@ def parse_yolo(lines, w=None, h=None):
         f = ln.split()
         c, cx, cy, bw, bh = int(f[0]), *map(float, f[1:5])
         kp = np.array(list(map(float, f[5:]))).reshape(2, 3) * (w, h, 1)
-        out.append((CLASSES[c], (cx * w - bw * w / 2, cy * h - bh * h / 2, cx * w + bw * w / 2 - 1, cy * h + bh * h / 2 - 1), kp))
+        box = (cx * w - bw * w / 2, cy * h - bh * h / 2, cx * w + bw * w / 2 - 1, cy * h + bh * h / 2 - 1)
+        out.append((CLASSES[c], box, kp))
     return out
 
 

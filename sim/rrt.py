@@ -10,9 +10,9 @@ goal. RRT finds a route there through joint space that keeps the arm clear of ev
 trees of collision-free arm poses, one from the start and one from the goal, until they meet, then the route is
 shortened by cutting corners wherever the straight joint-space line between two of its points is clear too.
 
-Two kinds of obstacle:
-- **hard**: never touched, never closer than the clearance (stems, truss stalks, fruit, pots, the greenhouse frame,
-  the floor). Damage there costs a plant or a truss.
+What the arm keeps clear of:
+- **hard**: never touched, never closer than the clearance (stems, pots, the greenhouse frame, the floor). Damage
+  there costs a plant.
 - **firm**: fruit and truss stalks. Always avoided on routes (SOFT_CLEARANCE); a finger pad may rest on them only
   where a caller asks for firm=False (SHEAR's short slide onto the petiole). ⚠️ When the fallback route could brush
   them too, it pushed a truss stalk with 8 N on the way to a leaf (2026-11-03).
@@ -37,7 +37,6 @@ SOFT_CLEARANCE = 0.002   # m kept from kept leaves (guess, unverified)
 STEP = np.radians(3.0)   # joint-space resolution of collision checks along a segment (largest joint)
 EXTEND = np.radians(12.0)    # RRT step: how far a tree grows toward a sample (design choice)
 MAX_ITERS = 4000         # per plan() call
-GOAL_BIAS = 0.15         # share of samples aimed at the other tree's newest node (RRT-Connect does this anyway)
 SHORTCUT_TRIES = 150
 
 
@@ -55,12 +54,10 @@ class Checker:
         self.firm = set(firm)
         self.blades = {g for g in range(self.m.ngeom) if self.is_arm[g] and (self.m.geom(g).name or "").startswith(
             prefix + "blade_") and self.m.geom_contype[g]}
-        self.n_checks = 0
 
     def hits(self, q, soft=True, clearance=CLEARANCE, soft_clearance=SOFT_CLEARANCE, ignore=(), firm=True,
              firm_clearance=SOFT_CLEARANCE):
         """Names of what the arm comes within the clearance of at joint config q (5, rad)."""
-        self.n_checks += 1
         self.d.qpos[self.adr] = q
         mujoco.mj_fwdPosition(self.m, self.d)
         out = set()
@@ -131,7 +128,7 @@ def plan(chk, q_start, q_goal, rng, lo=None, hi=None, iters=MAX_ITERS, **kw):
     if chk.segment_free(q_start, q_goal, **kw):
         return [q_start, q_goal]
     A, pa, B, pb = [q_start], [None], [q_goal], [None]
-    for k in range(iters):
+    for _ in range(iters):
         q_rand = rng.uniform(lo, hi)
         i = int(np.argmin(np.abs(np.array(A) - q_rand).max(1)))
         q_new = _steer(A[i], q_rand)

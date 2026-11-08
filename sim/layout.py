@@ -24,8 +24,8 @@ Seen from above (greenhouse frame, greenhouse.py):
 Row R0 stays empty: the birdseye looks through it. All positions are design guesses (unverified)
 until the rig is built.
 """
-import numpy as np
 import mujoco
+import numpy as np
 
 import greenhouse as gh
 import ik
@@ -95,8 +95,10 @@ def _base_cam_frame(base, arm_yaw):
     left = np.array([-np.sin(arm_yaw), np.cos(arm_yaw), 0.0])
     pos = base + BASE_CAM_FWD * fwd + BASE_CAM_LEFT * left + np.array([0, 0, BASE_CAM_Z])
     tgt = np.array([PLANT_X[0], ROW_Y, BASE_CAM_LOOK_Z])
-    f = tgt - pos; f /= np.linalg.norm(f)
-    right = np.cross(f, [0, 0, 1.0]); right /= np.linalg.norm(right)
+    f = tgt - pos
+    f /= np.linalg.norm(f)
+    right = np.cross(f, [0, 0, 1.0])
+    right /= np.linalg.norm(right)
     up = np.cross(right, f)
     return pos, right, up, f
 
@@ -157,16 +159,20 @@ def mast_xml():
     return "".join(g)
 
 
-def build(seeds=(11, 12, 13), arm=True, profile=sg.DEFAULT_PROFILE, leaf_scale=1.0, target=0, arm_xy=None, arm_yaw=ARM_YAW,
+def build(seeds=(11, 12, 13), profile=sg.DEFAULT_PROFILE, leaf_scale=1.0, target=0, arm_xy=None, arm_yaw=ARM_YAW,
           bend=False, turns=None):
     """arm_xy / arm_yaw: put the arm's base elsewhere (reach.py slides it along the aisle; default: in front of p0).
-    bend: petioles that bend at the stem (stemgen.make_plant). turns: per plant, the pot turned about its stem (rad)."""
+    bend: petioles that bend at the stem (stemgen.make_plant). turns: per plant, the pot turned about its stem (rad).
+    target: the plant the arm's ready pose (info["ready"]) waits in front of."""
     specs, bodies, eqs, where, stems = [], [], [], {}, []
     for k, seed in enumerate(seeds):
         spec = sg.make_plant(seed, profile, leaf_scale, bend, turns[k] if turns else 0.0)
         xy = (PLANT_X[k], ROW_Y)
         b, e, w = sg.plant_xml(spec, xy=xy, pp=f"p{k}_")
-        specs.append(spec); bodies.append(b); eqs.append(e); stems.append(xy)
+        specs.append(spec)
+        bodies.append(b)
+        eqs.append(e)
+        stems.append(xy)
         where.update({(k, i): v for i, v in w.items()})
     base = np.array([*(arm_xy or (ARM_X, ARM_Y)), 0.0])
     world = mujoco.MjSpec.from_string(sc.world_xml(gh.greenhouse_xml() + mast_xml() + birdseye_xml()
@@ -174,28 +180,25 @@ def build(seeds=(11, 12, 13), arm=True, profile=sg.DEFAULT_PROFILE, leaf_scale=1
     # A pale sky, so the frames aren't black above the plants (cosmetic, unverified colours).
     world.add_texture(name="sky", type=mujoco.mjtTexture.mjTEXTURE_SKYBOX, builtin=mujoco.mjtBuiltin.mjBUILTIN_GRADIENT,
                       rgb1=(0.85, 0.90, 0.95), rgb2=(0.55, 0.65, 0.75), width=256, height=1536)
-    if arm:
-        s = sc.arm_spec()
-        cam = s.body("wrist_camera").add_camera(name="claw", pos=CLAW_POS_IN_BODY, fovy=LENSES["claw"].fovy)
-        cam.alt.type = mujoco.mjtOrientation.mjORIENTATION_XYAXES
-        cam.alt.xyaxes = CLAW_XYAXES
-        frame = world.worldbody.add_frame(pos=base, quat=(np.cos(arm_yaw / 2), 0, 0, np.sin(arm_yaw / 2)))
-        world.attach(s, frame=frame, prefix="arm/")
-        sc.add_blade_pairs(world)          # ⚠️ parent/child bodies skip contacts without the pairs
+    s = sc.arm_spec()
+    cam = s.body("wrist_camera").add_camera(name="claw", pos=CLAW_POS_IN_BODY, fovy=LENSES["claw"].fovy)
+    cam.alt.type = mujoco.mjtOrientation.mjORIENTATION_XYAXES
+    cam.alt.xyaxes = CLAW_XYAXES
+    frame = world.worldbody.add_frame(pos=base, quat=(np.cos(arm_yaw / 2), 0, 0, np.sin(arm_yaw / 2)))
+    world.attach(s, frame=frame, prefix="arm/")
+    sc.add_blade_pairs(world)              # ⚠️ parent/child bodies skip contacts without the pairs
     m = world.compile()
     # The offscreen buffer must fit the pinhole renders, not just 640x480 (lens.py).
     m.vis.global_.offwidth, m.vis.global_.offheight = pinhole_size()
     d = mujoco.MjData(m)
-    ready = ready_err = None
-    if arm:
-        q = sc.settled_arm()[0]            # wrist roll that levels the jaw hinge, jaw open
-        for j, v in q.items():
-            d.qpos[m.joint("arm/" + j).qposadr[0]] = v
-        sx, sy = stems[target]
-        ready, ready_err = ik.reach(m, d, (sx, sy - READY_STANDOFF, READY_Z))
-        for j, v in (q | ready).items():
-            d.qpos[m.joint("arm/" + j).qposadr[0]] = v
-            d.ctrl[m.actuator("arm/" + j).id] = v
+    q = sc.settled_arm()[0]                # wrist roll that levels the jaw hinge, jaw open
+    for j, v in q.items():
+        d.qpos[m.joint("arm/" + j).qposadr[0]] = v
+    sx, sy = stems[target]
+    ready, ready_err = ik.reach(m, d, (sx, sy - READY_STANDOFF, READY_Z))
+    for j, v in (q | ready).items():
+        d.qpos[m.joint("arm/" + j).qposadr[0]] = v
+        d.ctrl[m.actuator("arm/" + j).id] = v
     mujoco.mj_forward(m, d)
     info = dict(specs=specs, where=where, stems=stems, target_plant=target, arm_base=base, arm_yaw=arm_yaw,
                 ready=ready, ready_err=ready_err)

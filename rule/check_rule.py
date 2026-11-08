@@ -13,8 +13,18 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from rule.select_leaves import (ClawView, Conditions, LEAF, Node, SCAR, Settings, TRUSS, UNKNOWN,
-                                confirm_cut, select_leaves)
+from rule.select_leaves import (
+    LEAF,
+    SCAR,
+    TRUSS,
+    UNKNOWN,
+    ClawView,
+    Conditions,
+    Node,
+    Settings,
+    confirm_cut,
+    select_leaves,
+)
 
 LEAF_TOKENS = {"s": dict(state=SCAR), "g": {}, "y": dict(health="yellow"), "d": dict(health="diseased"),
                "?": dict(state=UNKNOWN)}
@@ -37,7 +47,8 @@ CASES = [
     ("steady state: below the ripe truss + one above",
      "s s g g T:r g g g T:t g g g T:g", Settings(min_leaves_kept=0), None, [2, 3, 5], {6: "keep", 0: "scar"}),
     ("harvested truss isn't the anchor; pass cap 3, oldest first",
-     "g g g T:h g g g T:r g g g", Settings(min_leaves_kept=0), None, [0, 1, 2], {4: "cap", 5: "cap", 6: "cap", 8: "cap"}),
+     "g g g T:h g g g T:r g g g", Settings(min_leaves_kept=0), None, [0, 1, 2],
+     {4: "cap", 5: "cap", 6: "cap", 8: "cap"}),
     ("heat hold: nothing above the anchor",
      "s s g g T:r g g g T:t g g g T:g", Settings(min_leaves_kept=0, heat_hold=True), None, [2, 3], {5: "keep"}),
     ("young crop: only yellow below the lowest truss; yellow above is flagged",
