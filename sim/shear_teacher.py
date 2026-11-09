@@ -65,6 +65,35 @@ END_START_TOL = np.radians(3.0)            # back at the start pose within this 
 MAX_S = 40.0                               # done after this long whatever happens
 
 
+# ⚠️ Self-collision (2026-11-09): rrt.Checker skips every contact between two arm parts, so neither the v1 expert's
+# RRT nor this teacher saw the arm fold into itself. Leaving the pre-cut pose of rows 910009 and 910486 the shoulder
+# touched the lower arm, the elbow servo sat at its full 3.35 N.m and the run stalled until the time limit (B.L.U.S.H's
+# teacher had the same with its wrist camera mount). Every checker the teacher uses now also reports arm parts closer
+# than SELF_CLEARANCE, except pairs inside the hand (HAND_PARTS touch by design).
+SELF_CLEARANCE = 0.002                     # m (the planner's soft clearance, rrt.SOFT_CLEARANCE; guess, unverified)
+HAND_PARTS = ("gripper", "moving_jaw", "finray", "pad_", "wrist_camera", "blade")
+
+
+def add_self_check(chk, prefix="arm/"):
+    """Make chk.hits (and so free / segment_free / path_ok) also report self-collisions of the arm. Returns chk."""
+    m = chk.m
+    body = [m.body(m.geom_bodyid[g]).name for g in range(m.ngeom)]
+    arm = np.array([b.startswith(prefix) for b in body])
+    hand = np.array([any(h in b for h in HAND_PARTS) for b in body])
+    orig = chk.hits
+
+    def hits(q, **kw):
+        out = orig(q, **kw)                       # leaves chk.d at q, contacts current
+        for c in chk.d.contact[:chk.d.ncon]:
+            a, b = c.geom1, c.geom2
+            if (arm[a] and arm[b] and m.geom_bodyid[a] != m.geom_bodyid[b] and not (hand[a] and hand[b])
+                    and c.dist < SELF_CLEARANCE):
+                out.add(f"self: {body[a][len(prefix):]} / {body[b][len(prefix):]}")
+        return out
+    chk.hits = hits
+    return chk
+
+
 class Leg:
     """B.L.U.S.H truss_teacher.Leg (b25ea3b), in rad: a joint path ((n, 5)) or a hold, the jaw, the pace."""
 
@@ -180,7 +209,11 @@ class ShearTeacher:
     def _legs_for(self, p):
         scn = self.scn
         chk, target = scn.checker(p.prefix)
+        add_self_check(chk)
         q0 = scn.d.qpos[scn.arm_adr].copy()
+        # plan_cut checked the slide without the arm's own parts; again with them
+        if not chk.path_ok(p.slide, soft=False, firm=False, clearance=ct.SLIDE_CLEARANCE, ignore=target):
+            return "the slide folds the arm into itself"
         to_leaf, std = None, None
         for xs, so in self._standoffs(p):
             if len(xs) > 1 and not chk.path_ok(xs):
