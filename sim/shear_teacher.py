@@ -47,7 +47,11 @@ HOME_KW = ({"clearance": ct.HOME_CLEARANCE}, {}, {"soft": False})
 # (use_degrees=false), copied from v1 RRT routes whose straight line was blocked; both went high over the aisle
 # first (rows 910003 and 910009, 2026-11-09; gripper origin in the comment).
 VIA_NORM = ((-36.0, -44.0, -27.0, -28.0, 1.0),     # (0.22, 0.18, 0.41): high over the aisle, left (row 910003)
-            (-18.0, -50.0, -3.0, 15.0, -63.0))     # (0.19, 0.26, 0.36): high, left of p0 (row 910009)
+            (-18.0, -50.0, -3.0, 15.0, -63.0),     # (0.19, 0.26, 0.36): high, left of p0 (row 910009)
+            # Added from a search (2026-11-09): v1 RRT routes on rows 920000-920267 (apart from the test rows), the
+            # route way-points pooled, and the one that unblocks most rows the line and the vias above can't reach
+            # kept. 9 of 90 rows were cuttable but blocked; this pose unblocks 2, no other pose 2 more.
+            (12.0, -69.0, 12.0, -18.0, -12.0))     # (0.22, 0.20, 0.36): high over the aisle, centre
 # --- timing: v1's fixed values ---
 HOLD_END_S = 0.3                           # v1 0.5; short, see the docstring
 CLOSE_S, CUT_WAIT_S = ct.CLOSE_S, ct.CUT_WAIT_S
@@ -152,9 +156,15 @@ class ShearTeacher:
         return out
 
     def free_move(self, chk, xa, xb, levels, **extra):
-        """For each clearance level in order: the straight joint line, else over a fixed via-pose (nearest xb first).
-        Returns (way-points, how) or (None, None); how = (level, 0 for the line or via number from 1)."""
-        order = sorted(range(len(self.vias)), key=lambda j: float(np.abs(self.vias[j] - xb).max()))
+        """For each clearance level in order: the straight joint line, else over a fixed via-pose (nearest xb first),
+        else two vias chained. Returns (way-points, how) or (None, None); how = (level, 0 for the line, the via's
+        number from 1, or 10 * first + second for a chain)."""
+        V = self.vias
+        dist = lambda u, v: float(np.abs(u - v).max())   # noqa: E731
+        order = sorted(range(len(V)), key=lambda j: dist(V[j], xb))
+        # last fallback, as B.L.U.S.H's teacher: two vias chained (up out of the start, then over), fixed order
+        pairs = sorted(((i, j) for i in range(len(V)) for j in range(len(V)) if i != j),
+                       key=lambda ij: dist(xa, V[ij[0]]) + dist(V[ij[0]], V[ij[1]]) + dist(V[ij[1]], xb))
         for li, kw in enumerate(levels):
             kw = {**kw, **extra}
             if chk.path_ok([xa, xb], **kw):
@@ -162,6 +172,9 @@ class ShearTeacher:
             for j in order:
                 if chk.path_ok([xa, self.vias[j], xb], **kw):
                     return [xa, self.vias[j], xb], (li, j + 1)
+            for i, j in pairs:
+                if chk.path_ok([xa, self.vias[i], self.vias[j], xb], **kw):
+                    return [xa, self.vias[i], self.vias[j], xb], (li, 10 * (i + 1) + j + 1)
         return None, None
 
     def _legs_for(self, p):
