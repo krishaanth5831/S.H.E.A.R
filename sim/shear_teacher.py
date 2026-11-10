@@ -323,7 +323,13 @@ def run(scn, T, frame_cb=None, push=None, displace=None):
     cut_pt = scn.info["where"][key]["base"]
     near = [c for k, c in ep.cutters.items() if np.linalg.norm(scn.info["where"][k]["base"] - cut_pt) < ct.NEAR_LEAF_M]
     pushed = None
+    tgt = ep.cutters[key]
     while not T.done:
+        # ⚠️ The cut completes during the slide out (jaw shut, pulling): opening before it left 2 of 2 rows uncut
+        # (2026-11-09). If the leaf is still on after the slide out, the jaw holds a leaf that's attached to the plant
+        # and the arm can't leave (row 910147 stalled for the full MAX_S): stop there, the run fails anyway.
+        if T.leg == "to_start" and tgt.cut_t is None:
+            break
         if push is not None and pushed is None and T.leg == push[0] and T.n_in_leg == push[1]:
             pushed = displace(scn)
         leg = T.leg
@@ -341,7 +347,6 @@ def run(scn, T, frame_cb=None, push=None, displace=None):
         ep.t += 1.0 / FPS
         if frame_cb:
             frame_cb(leg, ep)
-    tgt = ep.cutters[key]
     others = [k for k, c in ep.cutters.items() if k != key and c.cut_t is not None]
     mon, why = ep.mon, []
     if tgt.cut_t is None:
