@@ -6,6 +6,14 @@ started on the episode gen").
   python generate_episodes.py --episodes 200            into krish5831/shear_sim_scripted_v1 (the v3 training set)
   python generate_episodes.py --episodes 200 --resume   append to it after a crash
   lerobot-dataset-viz --repo-id krish5831/shear_sim_scripted_v1_pilot --episode-index 0     what got recorded
+  python generate_episodes.py --teacher --one-row 910057 --episodes 50 --no-dr \
+      --repo-id krish5831/shear_sim_teacher_onerow_v1      post-mortem step 1: teacher v3, one row, noise on
+
+--teacher (post-mortem steps 1+, 2026-11-11): the closed-loop teacher (shear_teacher.py, one cut per episode) instead
+of the v1 pass, with DART-style noise as B.L.U.S.H's generate_truss.py: the servos get the teacher's command plus an
+AR(1) noise per arm joint, the dataset records the clean command (the label). observation.environment_state = the cue
+(shear_teacher.ENV_NAMES: the target's cut point and petiole direction in the arm base's frame). No start jitter, no
+hold episodes, no balance skips. --one-row: every episode the same row (only the noise differs).
 
 One episode = one pass (cutter.run_pass): from the start pose, the rule's cuts on the three plants in front of
 the arm, back to the start pose. The pots are set first (generate_cuts.best_turns). Every frame is recorded the
@@ -38,6 +46,7 @@ import numpy as np  # noqa: E402
 import arm_map  # noqa: E402
 import cutter as ct  # noqa: E402
 import generate_cuts as gc  # noqa: E402
+import shear_teacher as st  # noqa: E402
 from cameras import CAMERAS  # noqa: E402  ("base", "claw") since the v1 rig
 
 # ⚠️ LOCKED: v0 and v1 were recorded with it (their meta/tasks.parquet). Changing it makes earlier episodes a
@@ -55,15 +64,45 @@ P0_ONLY_SKIP = 0.5
 START_JITTER_DEG = 3.0
 SEED_BASE = 900_000          # row attempt k uses seeds SEED_BASE + 3k .. +2 (apart from the trials' 700000s)
 LOG_DIR = pathlib.Path.home() / ".cache" / "shear_sim" / "episodes"
+# --teacher's noise (B.L.U.S.H generate_truss.py's values, 2026-11-11): per arm joint an AR(1) process, stationary std
+# NOISE_NORM norm units (~1.5-1.8 deg), NOISE_RHO per frame (~0.3 s at 30 fps); its seed per episode is logged.
+NOISE_NORM = 1.0                 # guess, unverified (B.L.U.S.H's)
+NOISE_RHO = 0.9                  # guess, unverified
+# Off on the slide in and from the close on: the cut completes on the slide out with the jaw shut, and the judge
+# wants the arm back on the start pose. ⚠️ Half noise on the slide in pressed the stem with 40-83 N in 6 of 6
+# episodes on row 910057 (2026-11-11): the slide is the 2 mm move. Half on the standoff (2 cm pushes failed there in
+# check_teacher.py push, 1 cm recovered).
+NOISE_OFF = {"slide_in", "close", "cut_wait", "slide_out", "to_start", "hold_end"}
+NOISE_SCALE = {"standoff_in": 0.5}
+TEACHER_ROW_START = 930_000      # --teacher without --one-row: rows from here (apart from 900000s, 910000s, 920000s)
+
+
+class Noise:
+    """B.L.U.S.H sim/generate_truss.py's Noise (commit fc2af15), per leg name: (leg) -> the offset (5,) in norm units
+    added to the teacher's arm command (the jaw untouched)."""
+
+    def __init__(self, sigma, rho, seed, episode):
+        self.sigma, self.rho = sigma, rho
+        self.rng = np.random.default_rng([seed, episode, 0xDA27])
+        self.n = np.zeros(5)
+        self.max = 0.0
+
+    def __call__(self, leg):
+        # steps every frame, also where it's off, so one leg's noise doesn't depend on the legs before
+        self.n = self.rho * self.n + self.sigma * np.sqrt(1 - self.rho ** 2) * self.rng.normal(size=5)
+        out = (0.0 if leg in NOISE_OFF else NOISE_SCALE.get(leg, 1.0)) * self.n
+        self.max = max(self.max, float(np.abs(out).max()))
+        return out
 
 
 class Recorder:
     """Feeds one frame per Episode callback: the observation from the frame before, and the action that was sent
     during this one (lerobot-record's order: observe, then act)."""
 
-    def __init__(self, ds, scn, build, rop, tap):
+    def __init__(self, ds, scn, build, rop, tap, env=None):
         from cameras import SimCameras
         self.ds, self.scn, self.build, self.rop, self.tap = ds, scn, build, rop, tap
+        self.env = env                            # --teacher: observation.environment_state, the same every frame
         self.cams = SimCameras(scn.m)
         self.fm = arm_map.FollowerMap()
         self.prev = self.observe()
@@ -78,13 +117,18 @@ class Recorder:
         return obs
 
     def frame(self, phase, ep):
-        from lerobot.utils.constants import ACTION, OBS_STR
+        from lerobot.utils.constants import ACTION, OBS_ENV_STATE, OBS_STR
         d, scn = self.scn.d, self.scn
-        sent = {f"{j}.pos": float(v) for j, v in
-                zip(arm_map.JOINTS, self.fm.rad_to_norm(np.r_[d.ctrl[scn.act], d.ctrl[scn.jaw_act]]))}
-        self.ds.add_frame({**self.build(self.ds.features, self.rop(self.prev), prefix=OBS_STR),
-                           **self.build(self.ds.features, self.tap((sent, self.prev)), prefix=ACTION),
-                           "task": TASK})
+        # --teacher: the clean command (ep.label), not what the servos got (that has the noise in it)
+        label = getattr(ep, "label", None)
+        q6 = np.r_[d.ctrl[scn.act], d.ctrl[scn.jaw_act]] if label is None else label
+        sent = {f"{j}.pos": float(v) for j, v in zip(arm_map.JOINTS, self.fm.rad_to_norm(q6))}
+        obs_feats = {k: v for k, v in self.ds.features.items() if k != OBS_ENV_STATE}
+        fr = {**self.build(obs_feats, self.rop(self.prev), prefix=OBS_STR),
+              **self.build(self.ds.features, self.tap((sent, self.prev)), prefix=ACTION), "task": TASK}
+        if self.env is not None:
+            fr[OBS_ENV_STATE] = self.env
+        self.ds.add_frame(fr)
         self.n += 1
         self.prev = self.observe()
 
@@ -92,7 +136,7 @@ class Recorder:
         self.cams.close()
 
 
-def make_dataset(repo_id, resume):
+def make_dataset(repo_id, resume, env_names=None):
     from lerobot.configs.video import RGBEncoderConfig
     from lerobot.datasets import LeRobotDataset, aggregate_pipeline_dataset_features, create_initial_features
     from lerobot.processor import make_default_processors
@@ -110,6 +154,9 @@ def make_dataset(repo_id, resume):
                                             use_videos=True),
         aggregate_pipeline_dataset_features(pipeline=rop, initial_features=create_initial_features(
             observation={**joints, **{c: (480, 640, 3) for c in CAMERAS}}), use_videos=True))
+    if env_names:
+        from lerobot.utils.constants import OBS_ENV_STATE
+        features[OBS_ENV_STATE] = {"dtype": "float32", "shape": [len(env_names)], "names": env_names}
     enc = RGBEncoderConfig(vcodec="libsvtav1")                  # as B.L.U.S.H (AV1, lerobot-record's default)
     if resume:
         ds = LeRobotDataset.resume(repo_id, root=root, rgb_encoder=enc, image_writer_threads=4)
@@ -128,6 +175,9 @@ def main():
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--max-attempts", type=int, default=None, help="rows tried at most (default 12 per episode)")
     ap.add_argument("--no-dr", action="store_true", help="no domain randomisation (the pilot's plain look)")
+    ap.add_argument("--teacher", action="store_true", help="teacher v3 (one cut per episode) with noise, cue numbers")
+    ap.add_argument("--one-row", type=int, default=None, help="--teacher: every episode this row (step 1)")
+    ap.add_argument("--noise", type=float, default=NOISE_NORM, help="--teacher: noise std per arm joint, norm units")
     a = ap.parse_args()
     if a.pilot:
         a.repo_id, n_eps = a.repo_id + "_pilot", a.episodes or PILOT_EPISODES
@@ -136,10 +186,12 @@ def main():
     else:
         sys.exit("--pilot, or --episodes N for a real batch (after K7 approved the pilot)")
     from lerobot.utils.feature_utils import build_dataset_frame
-    ds, tap, rop, root = make_dataset(a.repo_id, a.resume)
+    ds, tap, rop, root = make_dataset(a.repo_id, a.resume, st.ENV_NAMES if a.teacher else None)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / f"{a.repo_id.split('/')[-1]}_{time.strftime('%Y%m%d_%H%M%S')}.jsonl"
     print(f"dataset {a.repo_id} at {root}\ntask {TASK!r}\nattempt log {log_path}", flush=True)
+    if a.teacher:
+        return teacher_batch(a, n_eps, ds, tap, rop, root, log_path, build_dataset_frame)
     done_rows = set()
     if a.resume:                                  # rows an earlier run already tried
         for p in LOG_DIR.glob(f"{a.repo_id.split('/')[-1]}_2*.jsonl"):
@@ -207,6 +259,72 @@ def main():
             summary = dict(summary=True, kept=kept, attempts=attempts, minutes=round((time.time() - t_start) / 60, 1))
             log.write(json.dumps(summary) + "\n")
     print(f"\nkept {kept} episodes from {attempts} rows in {summary['minutes']} min -> {root}")
+    print("Not pushed to the Hub.")
+    return 0
+
+
+def teacher_batch(a, n_eps, ds, tap, rop, root, log_path, build):
+    """--teacher: one cut per episode by teacher v3, noisy execution, clean labels, the cue as numbers."""
+    if a.resume:
+        sys.exit("--teacher doesn't --resume yet")
+    kept, attempts, t_start = 0, 0, time.time()
+    turns_of = {}
+    max_attempts = a.max_attempts or 3 * n_eps
+    with log_path.open("w") as log:
+        try:
+            k = 0
+            while kept < n_eps and attempts < max_attempts:
+                row = a.one_row if a.one_row is not None else TEACHER_ROW_START + 3 * k
+                k += 1
+                seeds = tuple(row + j for j in range(3))
+                attempts += 1
+                t0 = time.time()
+                rec = dict(row=row, seeds=seeds, teacher="v3", attempt=attempts)
+                if row not in turns_of:     # check_teacher.scene_for's set-up (the rng is unused with route=False)
+                    turns_of[row] = gc.best_turns(seeds, np.random.default_rng(0))
+                turns, found = turns_of[row]
+                if not any(found):
+                    rec.update(kept=False, why="no pot angle gives a clean cut")
+                    log.write(json.dumps(rec) + "\n")
+                    log.flush()
+                    continue
+                scn = ct.Scene(seeds, turns=turns, domain_rand=not a.no_dr)
+                rec["domain_rand"] = scn.dr
+                try:
+                    T = st.ShearTeacher(scn).plan()
+                except st.PlanError as e:
+                    rec.update(kept=False, why=f"no plan: {e}")
+                    log.write(json.dumps(rec, default=str) + "\n")
+                    log.flush()
+                    print(f"row {row}: no plan ({e})", flush=True)
+                    continue
+                env = st.cue_env(scn, T.meta)
+                noise = Noise(a.noise, NOISE_RHO, row, attempts) if a.noise > 0 else None
+                r = Recorder(ds, scn, build, rop, tap, env=env)
+                res = st.run(scn, T, r.frame, noise=noise)
+                r.close()
+                rec.update(pot_turns_deg=[round(float(np.degrees(x)) % 360, 1) for x in turns], frames=r.n,
+                           env=env.round(4).tolist(), plan=T.meta, result=res, wall_s=round(time.time() - t0, 1),
+                           noise=None if noise is None else dict(std_norm=a.noise, rho=NOISE_RHO,
+                                                                 seed=[row, attempts, 0xDA27],
+                                                                 max_norm=round(noise.max, 2)))
+                if res["verdict"] != "PASS":
+                    ds.clear_episode_buffer()
+                    rec.update(kept=False, why=res["why"])
+                    print(f"row {row} attempt {attempts}: discarded ({res['why']}) [{rec['wall_s']} s]", flush=True)
+                else:
+                    ds.save_episode()
+                    rec.update(kept=True, episode_index=kept)
+                    kept += 1
+                    print(f"✅ episode {kept - 1} ({kept}/{n_eps}): row {row}, stub {res['stub_mm']} mm, {r.n} frames "
+                          f"({r.n / ct.FPS:.1f} s) [{rec['wall_s']} s wall]", flush=True)
+                log.write(json.dumps(rec, default=str) + "\n")
+                log.flush()
+        finally:
+            ds.finalize()
+            summary = dict(summary=True, kept=kept, attempts=attempts, minutes=round((time.time() - t_start) / 60, 1))
+            log.write(json.dumps(summary) + "\n")
+    print(f"\nkept {kept} episodes from {attempts} attempts in {summary['minutes']} min -> {root}")
     print("Not pushed to the Hub.")
     return 0
 

@@ -63,6 +63,11 @@ STALL_RAD, STALL_FRAMES = np.radians(0.03), 8   # ...or the arm moved less than 
 SEARCH_BACK, SEARCH_AHEAD = 0.5, 6.0       # projection window in leads (B.L.U.S.H's teacher)
 END_START_TOL = np.radians(3.0)            # back at the start pose within this on every joint (guess)
 MAX_S = 40.0                               # done after this long whatever happens
+# --- the cue (post-mortem 6.2, step 1, 2026-11-11): what the policy gets as numbers (observation.environment_state) ---
+# The target's cut point (where the petiole meets the stem, m) and the petiole's direction (unit vector, out from the
+# stem), both in the arm base's own frame: x forward toward the row, y left, z up. Measured once, when the teacher
+# plans (the plant at rest). On the real arm they come from the cut-point detector (labels.py keypoints) plus depth.
+ENV_NAMES = ["cut_x", "cut_y", "cut_z", "petiole_dx", "petiole_dy", "petiole_dz"]
 
 
 # ⚠️ Self-collision (2026-11-09): rrt.Checker skips every contact between two arm parts, so neither the v1 expert's
@@ -92,6 +97,15 @@ def add_self_check(chk, prefix="arm/"):
         return out
     chk.hits = hits
     return chk
+
+
+def cue_env(scn, meta):
+    """The cue as observation.environment_state (ENV_NAMES order, float32), from ShearTeacher.meta."""
+    b = scn.m.body("arm/base").id
+    o, R = scn.d.xpos[b], scn.d.xmat[b].reshape(3, 3)
+    cut = R.T @ (np.asarray(meta["cue_cut_point"]) - o)
+    pet = R.T @ np.asarray(meta["cue_petiole_dir"])
+    return np.r_[cut, pet].astype(np.float32)
 
 
 class Leg:
@@ -311,9 +325,11 @@ class ShearTeacher:
         return target + self.I, jaw
 
 
-def run(scn, T, frame_cb=None, push=None, displace=None):
+def run(scn, T, frame_cb=None, push=None, displace=None, noise=None):
     """Play teacher T in scn's physics (cutter.Episode's stepping, cutters and force monitor), judge the one cut.
-    push: (leg name, frame in leg) at which displace(scn) is called (check_teacher.py)."""
+    push: (leg name, frame in leg) at which displace(scn) is called (check_teacher.py).
+    noise: a callable (leg) -> (5,) offset in norm units (generate_episodes.Noise, DART-style): the servos get the
+    teacher's command plus it, while ep.label keeps the clean command (rad, 6 with the jaw) for the recorder."""
     ep = ct.Episode(scn, None, frame_cb)
     m, d = scn.m, scn.d
     p = T.plan_cut
@@ -334,6 +350,13 @@ def run(scn, T, frame_cb=None, push=None, displace=None):
             pushed = displace(scn)
         leg = T.leg
         a, jaw = T.act(ep.q_now())
+        ep.label = np.r_[a, jaw]
+        if noise is not None:
+            # as a difference: the norm <-> rad maps clamp at the calibrated range, the clean command must not move
+            n6 = T.fm.rad_to_norm(ep.label)
+            moved = n6.copy()
+            moved[:5] += noise(leg)
+            a = a + (T.fm.norm_to_rad(moved) - T.fm.norm_to_rad(n6))[:5]
         ep.mon.phase = leg
         d.ctrl[scn.act] = a
         ep.jaw = jaw
