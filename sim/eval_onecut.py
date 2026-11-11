@@ -212,8 +212,8 @@ def main():
     a = ap.parse_args()
     import torch
     from lerobot.utils.constants import OBS_ENV_STATE
-    from lerobot.utils.import_utils import register_third_party_plugins
-    register_third_party_plugins()
+    # ⚠️ No register_third_party_plugins(): it imports B.L.U.S.H's so101_mujoco plugin, whose `cameras` import then
+    # finds THIS repo's sim/cameras.py (ImportError RIG_CAMERAS, 2026-11-11). The eval drives cutter.Scene directly.
     path = a.policy.resolve()
     over = {}
     if a.ensemble is not None:
