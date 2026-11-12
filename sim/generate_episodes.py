@@ -6,14 +6,22 @@ started on the episode gen").
   python generate_episodes.py --episodes 200            into krish5831/shear_sim_scripted_v1 (the v3 training set)
   python generate_episodes.py --episodes 200 --resume   append to it after a crash
   lerobot-dataset-viz --repo-id krish5831/shear_sim_scripted_v1_pilot --episode-index 0     what got recorded
-  python generate_episodes.py --teacher --one-row 910057 --episodes 50 --no-dr \
+  python generate_episodes.py --teacher --one-row 910057 --episodes 50 --no-dr --noise-share 1.0 \
       --repo-id krish5831/shear_sim_teacher_onerow_v1      post-mortem step 1: teacher v3, one row, noise on
+  python generate_episodes.py --teacher --no-dr --hold-share 0.10 --row-start 930000 --episodes 20 \
+      --max-attempts 900 --repo-id krish5831/shear_sim_teacher_v3_p00   post-mortem step 2: one part of dataset v3
 
 --teacher (post-mortem steps 1+, 2026-11-11): the closed-loop teacher (shear_teacher.py, one cut per episode) instead
 of the v1 pass, with DART-style noise as B.L.U.S.H's generate_truss.py: the servos get the teacher's command plus an
 AR(1) noise per arm joint, the dataset records the clean command (the label). observation.environment_state = the cue
 (shear_teacher.ENV_NAMES: the target's cut point and petiole direction in the arm base's frame). No start jitter, no
-hold episodes, no balance skips. --one-row: every episode the same row (only the noise differs).
+hold episodes or balance skips unless asked (--hold-share, step 2: rows where the rule cuts nothing or no cut is
+cleanly reachable, the arm stays home, the cue all zeros; targets on p0 are skipped P0_ONLY_SKIP of the time,
+since step 0 solved p0 32 vs p1 15).
+--noise-share: share of rows with noise, drawn per row. --one-row: every episode the same row (only the noise differs).
+Step 2 runs one process per 20 episodes (its own --row-start and repo id <repo>_pNN, merged after): B.L.U.S.H's
+recorder grew to its 6 GB cap after 24-58 episodes (a dry run stays at ~2 GB, so the growth is in the recording
+pass), and a dataset is unreadable until finalize (B.L.U.S.H lost 108 episodes that way, 2026-11-12).
 
 One episode = one pass (cutter.run_pass): from the start pose, the rule's cuts on the three plants in front of
 the arm, back to the start pose. The pots are set first (generate_cuts.best_turns). Every frame is recorded the
@@ -75,6 +83,7 @@ NOISE_RHO = 0.9                  # guess, unverified
 NOISE_OFF = {"slide_in", "close", "cut_wait", "slide_out", "to_start", "hold_end"}
 NOISE_SCALE = {"standoff_in": 0.5}
 TEACHER_ROW_START = 930_000      # --teacher without --one-row: rows from here (apart from 900000s, 910000s, 920000s)
+NOISE_SHARE = 0.5                # --teacher: share of rows with noise (B.L.U.S.H step 2's; step 1 used 1.0)
 
 
 class Noise:
@@ -178,6 +187,12 @@ def main():
     ap.add_argument("--teacher", action="store_true", help="teacher v3 (one cut per episode) with noise, cue numbers")
     ap.add_argument("--one-row", type=int, default=None, help="--teacher: every episode this row (step 1)")
     ap.add_argument("--noise", type=float, default=NOISE_NORM, help="--teacher: noise std per arm joint, norm units")
+    ap.add_argument("--noise-share", type=float, default=NOISE_SHARE,
+                    help="--teacher: share of rows with noise, drawn per row (step 1 used 1.0)")
+    ap.add_argument("--hold-share", type=float, default=0.0,
+                    help="--teacher: share of hold episodes (rule cuts nothing, arm stays home); also turns on the "
+                         "p0 balance skip")
+    ap.add_argument("--row-start", type=int, default=TEACHER_ROW_START, help="--teacher: first row (step 2 parts)")
     a = ap.parse_args()
     if a.pilot:
         a.repo_id, n_eps = a.repo_id + "_pilot", a.episodes or PILOT_EPISODES
@@ -268,13 +283,14 @@ def teacher_batch(a, n_eps, ds, tap, rop, root, log_path, build):
     if a.resume:
         sys.exit("--teacher doesn't --resume yet")
     kept, attempts, t_start = 0, 0, time.time()
+    n_hold, max_hold = 0, round(a.hold_share * n_eps)
     turns_of = {}
     max_attempts = a.max_attempts or 3 * n_eps
     with log_path.open("w") as log:
         try:
             k = 0
             while kept < n_eps and attempts < max_attempts:
-                row = a.one_row if a.one_row is not None else TEACHER_ROW_START + 3 * k
+                row = a.one_row if a.one_row is not None else a.row_start + 3 * k
                 k += 1
                 seeds = tuple(row + j for j in range(3))
                 attempts += 1
@@ -283,13 +299,38 @@ def teacher_batch(a, n_eps, ds, tap, rop, root, log_path, build):
                 if row not in turns_of:     # check_teacher.scene_for's set-up (the rng is unused with route=False)
                     turns_of[row] = gc.best_turns(seeds, np.random.default_rng(0))
                 turns, found = turns_of[row]
+                # per row, so a part re-run decides the same (0xA015 / 0xBA1: their own streams, as B.L.U.S.H)
+                noisy = a.noise > 0 and bool(np.random.default_rng([row, 0xA015]).random() < a.noise_share)
+                hold = False
                 if not any(found):
-                    rec.update(kept=False, why="no pot angle gives a clean cut")
-                    log.write(json.dumps(rec) + "\n")
-                    log.flush()
-                    continue
+                    rule_cuts = sum(len(ct.sg.label(ct.sg.make_plant(sd, bend=True)).cuts) for sd in seeds)
+                    # a hold: nothing to cut OR nothing cleanly reachable, either way the cue is zero and the arm
+                    # stays home (only 4 of 300 rows have no rule cut at all, too few for 10 %)
+                    hold = n_hold < max_hold
+                    rec["hold_why"] = "the rule cuts nothing" if rule_cuts == 0 else "no pot angle gives a clean cut"
+                    if not hold:
+                        rec.update(kept=False, why="no pot angle gives a clean cut" if rule_cuts
+                                   else "the rule cuts nothing" + (" (hold quota full)" if max_hold else ""))
+                        log.write(json.dumps(rec) + "\n")
+                        log.flush()
+                        continue
                 scn = ct.Scene(seeds, turns=turns, domain_rand=not a.no_dr)
                 rec["domain_rand"] = scn.dr
+                if hold:
+                    env = np.zeros(len(st.ENV_NAMES), np.float32)
+                    r = Recorder(ds, scn, build, rop, tap, env=env)
+                    res = ct.hold_pass(scn, np.random.default_rng(row), r.frame, HOLD_S, 0.0)
+                    r.close()
+                    ds.save_episode()
+                    n_hold += 1
+                    rec.update(hold=True, frames=r.n, env=env.tolist(), kept=True, episode_index=kept,
+                               wall_s=round(time.time() - t0, 1))
+                    kept += 1
+                    print(f"✅ episode {kept - 1} ({kept}/{n_eps}): row {row}, HOLD ({rec['hold_why']}), "
+                          f"{r.n} frames [{rec['wall_s']} s wall]", flush=True)
+                    log.write(json.dumps(rec, default=str) + "\n")
+                    log.flush()
+                    continue
                 try:
                     T = st.ShearTeacher(scn).plan()
                 except st.PlanError as e:
@@ -298,8 +339,15 @@ def teacher_batch(a, n_eps, ds, tap, rop, root, log_path, build):
                     log.flush()
                     print(f"row {row}: no plan ({e})", flush=True)
                     continue
+                if (a.hold_share > 0 and T.meta.get("plant") == 0
+                        and np.random.default_rng([row, 0xBA1]).random() < P0_ONLY_SKIP):
+                    rec.update(kept=False, why="balance: target on p0")
+                    log.write(json.dumps(rec, default=str) + "\n")
+                    log.flush()
+                    print(f"row {row}: skipped for balance (target on p0)", flush=True)
+                    continue
                 env = st.cue_env(scn, T.meta)
-                noise = Noise(a.noise, NOISE_RHO, row, attempts) if a.noise > 0 else None
+                noise = Noise(a.noise, NOISE_RHO, row, attempts) if noisy else None
                 r = Recorder(ds, scn, build, rop, tap, env=env)
                 res = st.run(scn, T, r.frame, noise=noise)
                 r.close()
