@@ -146,7 +146,10 @@ def rollout(policy, pre, post, meta, wants_env, seeds, turns, noise=None, viewer
         for s in range(ep.steps_per_frame):
             mujoco.mj_step(m, d)
             for c in ep.cutters.values():
-                if c.attached:
+                # ⚠️ also after the cut while a nearer blade pair's second cut is pending (plant.Cutter._cut), as
+                # shear_teacher.run steps them: stepping only attached cutters missed it and read the far pair's
+                # 13-17 mm stub (replay_teacher, 2026-11-13: 2 of 5 clean teacher episodes)
+                if c.attached or c.pending:
                     c.step()
             if s % 5 == 0:
                 ep.mon.step()

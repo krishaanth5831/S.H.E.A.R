@@ -10,9 +10,11 @@ arm back at the start). check_replay.py does the same for the scripted v1 data (
 - clean episodes: the actions ARE what the servos got, so the replay must track the recording (max state difference
   under --tol, norm units) and pass.
 - noisy episodes (DART): the servos got label + noise, the dataset holds the clean label, so the replay can't track the
-  recording; it's judged on the outcome only ("labels only"), and it doesn't decide PASS/FAIL: the teacher is closed
-  loop, so its labels answer the noisy states they were made in, and played open loop from clean states they can land
-  elsewhere (first try 2026-11-13: 1 of 2 cut at a 17.4 mm stub, recorded 2.52 mm).
+  recording; it's judged on the outcome only ("labels only") and doesn't decide PASS/FAIL: the teacher is closed loop,
+  so its labels answer the noisy states they were made in and could land elsewhere when played from clean ones
+  (2026-11-13, 600-episode set: 5 of 5 still cut flush).
+- ⚠️ The replay steps through rollout_policy.Sim.act, which until 2026-11-13 missed the nearer blade pair's second cut
+  and read the far pair's 13-17 mm stub (2 of 5 clean episodes failed that way; fixed there and in eval_onecut).
 - holds (no cleanly cuttable leaf, cue zero): the arm must stay home and cut nothing.
 
 Reads each part's local dataset ~/.cache/huggingface/lerobot/<user>/<log name minus its time stamp>. Writes nothing.
