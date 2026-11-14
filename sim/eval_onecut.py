@@ -65,6 +65,10 @@ HOLD_EVAL_S = 6.0             # a hold row: the dataset's hold episodes are 5 s 
 HANDOFF_S = 0.5               # --hybrid: held on the pre-cut pose while the jaw opens before the slide (guess)
 HELD_OUT_ROW_START = 1_100_000   # --rows: past step 2's rows (930000 + 3000 * 30 parts, about 1020000)
 LOG_DIR = pathlib.Path.home() / ".cache" / "shear_sim" / "eval"
+# --rows: each row's pot angles and whether the teacher can cut it. ⚠️ Delete after a change to the teacher, the
+# plants or the pot-angle search: a stale "can cut" row is caught (the plan fails, the row is skipped), a stale
+# "can't cut" row is not.
+ROW_CACHE = LOG_DIR / "row_plans.json"
 
 
 def load_policy(path, device, overrides=None):
@@ -277,17 +281,27 @@ def wilson(k, n, z=1.96):
     return max(0.0, c - h), min(1.0, c + h)
 
 
-def row_plan(row):
-    """(seeds, turns, why) for a row: why is None when the teacher can cut it, else the reason it can't."""
+def row_plan(row, cache=None):
+    """(seeds, turns, why) for a row: why is None when the teacher can cut it, else the reason it can't.
+    cache: ROW_CACHE's dict, read and filled (every checkpoint of a run tests the same rows, and the pot-angle search
+    plus the plan took about a third of a 3-row run, 2026-11-14)."""
     seeds = tuple(row + j for j in range(3))
+    if cache is not None and str(row) in cache:
+        c = cache[str(row)]
+        return seeds, tuple(c["turns"]), c["why"]       # a tuple as best_turns gives: layout.build tests `if turns`
     turns, found = gc.best_turns(seeds, np.random.default_rng(0))   # check_teacher.scene_for's set-up
+    why = None
     if not any(found):
-        return seeds, turns, "no pot angle gives a clean cut"
-    try:
-        st.ShearTeacher(ct.Scene(seeds, turns=turns)).plan()
-    except st.PlanError as e:
-        return seeds, turns, f"no plan: {e}"
-    return seeds, turns, None
+        why = "no pot angle gives a clean cut"
+    else:
+        try:
+            st.ShearTeacher(ct.Scene(seeds, turns=turns)).plan()
+        except st.PlanError as e:
+            why = f"no plan: {e}"
+    if cache is not None:
+        cache[str(row)] = dict(turns=[float(x) for x in turns], why=why)
+        ROW_CACHE.write_text(json.dumps(cache))
+    return seeds, turns, why
 
 
 def main():
@@ -332,11 +346,12 @@ def main():
           f"{wants_env}; {where}; noise {a.noise}\nlog {log_path}", flush=True)
     results, skipped = [], []
     viewer = open_viewer if a.windowed else None
+    cache = (json.loads(ROW_CACHE.read_text()) if ROW_CACHE.exists() else {}) if a.rows is not None else None
     with log_path.open("w") as log:
         row, n_cut, n_hold = (a.row if a.row is not None else a.row_start) - 3, 0, 0
         while (a.row is not None and n_cut == 0) or (a.rows is not None and (n_cut < a.rows or n_hold < a.holds)):
             row += 3
-            seeds, turns, why = row_plan(row)
+            seeds, turns, why = row_plan(row, cache)
             if why is not None and a.row is not None:
                 sys.exit(f"row {a.row}: {why}")
             hold = why is not None
@@ -348,7 +363,12 @@ def main():
                 continue
             for i in range(a.rollouts):
                 noise = ge.Noise(a.noise, ge.NOISE_RHO, row, 1000 + i) if a.noise > 0 else None
-                r = rollout(policy, pre, post, meta, wants_env, seeds, turns, noise, viewer, handoff, hold)
+                try:
+                    r = rollout(policy, pre, post, meta, wants_env, seeds, turns, noise, viewer, handoff, hold)
+                except st.PlanError as e:             # a stale ROW_CACHE entry: the teacher can't cut it any more
+                    skipped.append(dict(row=row, why=f"cached as cuttable, but no plan: {e}"))
+                    print(f"  row {row}: skipped, the cache says cuttable but the teacher finds no plan", flush=True)
+                    break
                 r.update(row=row, rollout=i, mode=mode)
                 results.append(r)
                 log.write(json.dumps(r, default=str) + "\n")
@@ -365,8 +385,9 @@ def main():
                           f"{'cut' if r['cut'] else 'not cut'}, stub {r['stub_mm']} mm, closest {r['closest_mm']} mm, "
                           f"cut at {r['t_cut']} s{hand}, {r['seconds']} s; "
                           f"{'; '.join(r['why']) or 'clean'}   [{ok}/{len(cuts)} so far]", flush=True)
-            n_hold += hold
-            n_cut += not hold
+            else:
+                n_hold += hold
+                n_cut += not hold
         cuts = [x for x in results if x["kind"] == "cut"]
         holds = [x for x in results if x["kind"] == "hold"]
         n, ok = len(cuts), sum(x["success"] for x in cuts)

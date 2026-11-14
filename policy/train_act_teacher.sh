@@ -15,8 +15,10 @@
 # the stubs long; B.L.U.S.H's collapsed 95 % -> 5 % between 40k and 50k, post-mortem §6.9 / §6.10), so the default is
 # now a cosine decay to zero at --steps after WARMUP steps (lerobot's cosine_annealing_with_warmup). ACT's preset is
 # AdamW lr 1e-5, weight decay 1e-4 and no scheduler (configuration_act.py get_optimizer_preset), so the same optimiser
-# is spelled out here; the backbone's own param group comes from ACTPolicy.get_optim_params either way. Warmup 1000
-# steps: pi0's value (guess, unverified). EMA=1 adds lerobot's weight average (pretrained_model_ema per checkpoint).
+# is spelled out here. Without the preset lerobot passes policy.parameters() as one group (optim/factory.py) instead
+# of ACT's two (backbone apart); the same thing here, since optimizer_lr_backbone is 1e-5 too. Checked 2026-11-14:
+# lr 0 at step 0, 1e-5 at 1000, 5.1e-6 at 50k, 1.5e-6 at 75k, 0 at 100k. Warmup 1000 steps: pi0's value (guess,
+# unverified). EMA=1 adds lerobot's weight average (pretrained_model_ema per checkpoint).
 #
 # Run from the repo root, in the lerobot env, under systemd-run MemoryMax (CLAUDE.md). Writes outputs/train/$RUN.
 set -euo pipefail

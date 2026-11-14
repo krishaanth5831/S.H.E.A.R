@@ -91,13 +91,14 @@ def main():
     ranked = json.loads(out.read_text()) if out.exists() else {}
     key = " ".join(passthru)
     env = dict(os.environ, CUDA_VISIBLE_DEVICES="") if a.cpu else None
+    failed = set()                # --watch: a checkpoint whose eval crashed isn't tried again every POLL_S
     while True:
         cks = finished(a.run, a.watch)
         if a.only:
             cks = [p for p in cks if p.name in a.only]
         for ck in cks:
             tag = f"{ck.name} | {key}"
-            if tag in ranked:
+            if tag in ranked or tag in failed:
                 continue
             print(f"▶ {ck.name}  ({time.strftime('%H:%M')})", flush=True)
             p = subprocess.run([sys.executable, str(EVAL), str(ck / "pretrained_model"), *passthru],
@@ -105,6 +106,7 @@ def main():
             m = re.search(r"log (\S+\.jsonl)", p.stdout)
             if p.returncode or not m:
                 print(f"  failed (exit {p.returncode}):\n{p.stdout[-800:]}{p.stderr[-800:]}", flush=True)
+                failed.add(tag)
                 continue
             s = summary(m.group(1))
             ranked[tag] = row_of(s, ck, m.group(1))
@@ -114,6 +116,9 @@ def main():
             break
         if a.until is not None and any(int(r["checkpoint"]) >= a.until for t, r in ranked.items()
                                        if t.endswith(f"| {key}")):
+            break
+        if a.until is not None and any(int(t.split(" | ")[0]) >= a.until for t in failed):
+            print(f"the eval of checkpoint {a.until} failed: stopping", flush=True)
             break
         if a.pid is not None and not alive(a.pid) and finished(a.run, True) == cks:
             print(f"training process {a.pid} is gone and nothing new landed: stopping", flush=True)
