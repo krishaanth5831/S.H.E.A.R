@@ -384,6 +384,48 @@ pass. It reads the local dataset (`~/.cache/huggingface/lerobot/krish5831/shear_
 `--repo` for another), writes nothing, and needs no GPU. Episode 0 passed on 2026-11-08 (1 cut, joints within
 0.43 of the recording, in lerobot's normalised units).
 
+## Teacher v3 pipeline (the post-mortem ladder, November 2026)
+
+The scripted cutter picked its leaf by a search the camera can't see, so the policy data now comes from a
+deterministic closed-loop teacher (`shear_teacher.py`, one cut per episode), part of the episodes with noise on the
+executed action and the teacher's clean action as the label. The policy gets the cut point and the petiole
+direction as numbers. Plan and results: vault note "BLUSH + SHEAR Policy Post-Mortem".
+
+| Step | What | State |
+|---|---|---|
+| 0 | teacher + its three tests (`check_teacher.py`) | done: cuts 47 of 85 cuttable rows |
+| 1 | one row, 50 episodes, ACT: the pipeline check | passed at 45k steps (18 of 19 noisy rollouts) |
+| 2 | dataset v3 | done: `krish5831/shear_sim_teacher_v3`, 600 episodes (540 cuts, 60 holds), local only |
+| 3 | ACT on v3, a test at every 5k checkpoint; the hybrid alongside | set up, not started |
+
+```bash
+python check_teacher.py push --row 910003 --windowed          # watch the teacher recover from a push
+# step 2, how v3 was recorded: one process per 20-episode part, merged with B.L.U.S.H's sim/merge_parts.py
+python generate_episodes.py --teacher --no-dr --hold-share 0.10 --noise-share 0.5 --row-start 930000 \
+    --episodes 20 --max-attempts 900 --repo-id krish5831/shear_sim_teacher_v3_p00
+python replay_teacher.py ~/.cache/shear_sim/episodes/shear_sim_teacher_v3_p*.jsonl --n 10   # clean ones must reproduce
+python replay_teacher.py ~/.cache/shear_sim/episodes/shear_sim_teacher_v3_p*.jsonl --n 2 --windowed   # watch it
+# step 3 (from the repo root): cosine learning-rate decay, a checkpoint every 5k
+RUN=act_teacher_v3 policy/train_act_teacher.sh krish5831/shear_sim_teacher_v3
+# ... and in a second shell, a test of every checkpoint as it lands, on the CPU (the GPU stays with training)
+python pick_checkpoint.py ../outputs/train/act_teacher_v3 --watch --until 100000 --cpu -- --rows 20 --holds 5 \
+    --n-action-steps 100
+python eval_onecut.py ../outputs/train/act_teacher_v3/checkpoints/<step>/pretrained_model --rows 3 \
+    --n-action-steps 100 --windowed                            # watch a checkpoint drive
+python eval_onecut.py <checkpoint>/pretrained_model --rows 20 --n-action-steps 100 --hybrid    # the hybrid
+```
+
+`eval_onecut.py --rows N` tests N rows the teacher can cut, from row 1100000 on (outside every recorded range);
+rows it can't cut are skipped and counted, so a success rate is "of teacher-feasible cuts". The pot-angle search
+per row is cached in `~/.cache/shear_sim/eval/row_plans.json` (⚠️ delete it after a change to the teacher or the
+plants). `--holds K` runs the first K rows the teacher can't cut with the cue all zeros: the arm must stay home.
+`--hybrid`: the policy drives until the blades are within `--handoff-mm` (10) of the teacher's pre-cut pose, 4 cm
+back from the cut; then the teacher's slide in, cut, slide out and way home finish. ⚠️ In sim the slide knows the
+exact cut point, so the hybrid only tests the approach.
+⚠️ Play whole chunks (`--n-action-steps 100`): ensembling and re-planning every 25 steps both failed in step 1.
+⚠️ The evaluators must step a cutter while a second cut is pending (`plant.Cutter`): before 2026-11-13 they
+didn't, and read 13-17 mm stubs on cuts that were flush.
+
 ## Other files
 
 - `arm_map.py`: converts between sim joint angles (radians) and the real follower's calibrated units, so sim

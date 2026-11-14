@@ -121,7 +121,10 @@ class Sim:
         for k in range(self.ep.steps_per_frame):
             mujoco.mj_step(self.scn.m, d)
             for c in self.ep.cutters.values():
-                if c.attached:
+                # ⚠️ also after the cut while a nearer blade pair's second cut is pending (plant.Cutter._cut), as
+                # shear_teacher.run steps them: stepping only attached cutters missed it and read the far pair's
+                # 13-17 mm stub (replay_teacher, 2026-11-13: 2 of 5 clean teacher episodes)
+                if c.attached or c.pending:
                     c.step()
             if k % 5 == 0:
                 self.ep.mon.step()
