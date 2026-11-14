@@ -13,12 +13,14 @@
 #
 # Learning rate (step 3, 2026-11-14): step 1 drifted past its peak at a constant 1e-5 (45k 18 of 19, 50k 8 of 19 with
 # the stubs long; B.L.U.S.H's collapsed 95 % -> 5 % between 40k and 50k, post-mortem §6.9 / §6.10), so the default is
-# now a cosine decay to zero at --steps after WARMUP steps (lerobot's cosine_annealing_with_warmup). ACT's preset is
+# now a cosine decay from 1e-5 to LR_FLOOR (1e-6) at --steps, after WARMUP steps (lerobot's cosine_decay_with_warmup).
+# To a floor, not to zero: 100k steps are only 3.7 passes over dataset v3 (step 1 peaked at 18), so a run that is
+# still improving at the end can be resumed with more steps at the floor rate (post-mortem §6.11). ACT's preset is
 # AdamW lr 1e-5, weight decay 1e-4 and no scheduler (configuration_act.py get_optimizer_preset), so the same optimiser
 # is spelled out here. Without the preset lerobot passes policy.parameters() as one group (optim/factory.py) instead
-# of ACT's two (backbone apart); the same thing here, since optimizer_lr_backbone is 1e-5 too. Checked 2026-11-14:
-# lr 0 at step 0, 1e-5 at 1000, 5.1e-6 at 50k, 1.5e-6 at 75k, 0 at 100k. Warmup 1000 steps: pi0's value (guess,
-# unverified). EMA=1 adds lerobot's weight average (pretrained_model_ema per checkpoint).
+# of ACT's two (backbone apart); the same thing here, since optimizer_lr_backbone is 1e-5 too. Warmup 1000 steps:
+# pi0's value (guess, unverified). EMA=1 adds lerobot's weight average (pretrained_model_ema per checkpoint); AMP=1
+# trains in mixed precision.
 #
 # Run from the repo root, in the lerobot env, under systemd-run MemoryMax (CLAUDE.md). Writes outputs/train/$RUN.
 set -euo pipefail
@@ -30,7 +32,9 @@ CMD=(lerobot-train --dataset.repo_id="$DS" --policy.type=act --policy.device=cud
      --output_dir="outputs/train/$RUN" --job_name="$RUN" --wandb.enable=false)
 if [[ "${LR_SCHED:-cosine}" == cosine ]]; then
   CMD+=(--use_policy_training_preset=false --optimizer.type=adamw --optimizer.lr=1e-5 --optimizer.weight_decay=1e-4
-        --scheduler.type=cosine_annealing_with_warmup --scheduler.num_warmup_steps="${WARMUP:-1000}")
+        --scheduler.type=cosine_decay_with_warmup --scheduler.peak_lr=1e-5 --scheduler.decay_lr="${LR_FLOOR:-1e-6}"
+        --scheduler.num_warmup_steps="${WARMUP:-1000}" --scheduler.num_decay_steps="${STEPS:-100000}")
 fi
 [[ -n "${EMA:-}" ]] && CMD+=(--ema.enable=true)
+[[ -n "${AMP:-}" ]] && CMD+=(--policy.use_amp=true)
 if [[ -n "${DRYRUN:-}" ]]; then echo "${CMD[@]}"; else "${CMD[@]}"; fi
