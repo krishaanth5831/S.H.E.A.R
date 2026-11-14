@@ -3,6 +3,9 @@
 
   python eval_onecut.py <ckpt>/pretrained_model --row 910057 --rollouts 1                  step 1: clean, no noise
   python eval_onecut.py <ckpt>/pretrained_model --row 910057 --rollouts 19 --noise 1.0     step 1: with noise
+  python eval_onecut.py <ckpt>/pretrained_model --rows 20 --n-action-steps 100             step 3: 20 held-out rows
+  python eval_onecut.py <ckpt>/pretrained_model --rows 20 --holds 5                        ... plus 5 hold rows
+  python eval_onecut.py <ckpt>/pretrained_model --rows 20 --hybrid                         ... the hybrid (6.5)
   python eval_onecut.py ... --n-action-steps 100 | 25          how the chunks are played (the execution sweep)
   python eval_onecut.py ... --ensemble 0.01                    ACT temporal ensembling, a new chunk every frame
   python eval_onecut.py ... --rollouts 1 --windowed            watch the policy drive in a MuJoCo window
@@ -12,6 +15,19 @@ randomisation), lets teacher v3 plan it only to know the target leaf, its cue an
 drives from the start pose at 30 fps: every frame the joint state (use_degrees=false), the base + claw frames, the
 cue as observation.environment_state (shear_teacher.cue_env), and its action goes to the servos.
 
+--rows N: N rows the teacher can cut, from --row-start upwards in steps of 3 (the generator's spacing; the default
+start 1100000 is outside every recorded range: step 1 used 910057, step 2 rows 930000 to about 1020000). A row where
+no pot angle gives a clean cut, or the teacher finds no plan, is not teacher-feasible: skipped and counted, never in
+the denominator (the step-3 gate is "35 % of teacher-feasible cuts"). --holds K runs the first K such rows as holds
+(the cue all zeros, as the dataset's hold episodes): success = nothing cut, nothing pressed, the arm still on the
+start pose after HOLD_EVAL_S. Holds are reported on their own, not in the gate.
+
+--hybrid (post-mortem 6.5, K7's fallback 2026-11-05): the policy drives until the blades' cut point is within
+--handoff-mm of where the teacher's PRE-CUT pose puts it (4 cm back along the fingers, shear_teacher's slide start);
+then the teacher's own legs finish: a HANDOFF_S hold on the pre-cut pose while the jaw opens, the slide in, close,
+cut wait, slide out and home, with no noise. ⚠️ The slide is planned from the exact cut point, so in sim the hybrid
+only tests the approach; the honest test perturbs the cue by the detector's error (not built yet).
+
 --noise adds the dataset's noise (generate_episodes.Noise) to the policy's arm commands, off within NOISE_NEAR_M of the
 cut point and after the cut (as B.L.U.S.H's eval_truss.py --noise).
 
@@ -20,7 +36,8 @@ other leaf cut, nothing pressed over cutter.FORCE_LIMIT, no blade on a truss sta
 Also the closest approach of the tool point (the blades' cut point) to where the teacher's cut pose puts it, in mm.
 
 Writes one JSON line per rollout and a summary to ~/.cache/shear_sim/eval/<run>_<step>_<time>.jsonl. Run outside
-Claude Code's sandbox (the GPU, EGL), in the lerobot env, under systemd-run MemoryMax.
+Claude Code's sandbox (the GPU, EGL), in the lerobot env, under systemd-run MemoryMax. CUDA_VISIBLE_DEVICES="" keeps
+it on the CPU while the GPU trains (pick_checkpoint.py --watch --cpu).
 """
 import argparse
 import json
@@ -44,6 +61,9 @@ import shear_teacher as st  # noqa: E402
 MAX_S = 30.0                  # the teacher needs ~10.6 s on row 910057 (check_teacher solve, 2026-11-10); about 3x
 STILL_S = 0.5                 # after the cut: back on the start pose this long ends the rollout
 NOISE_NEAR_M = 0.03           # no noise this close to the cut point (B.L.U.S.H eval_truss.py's value)
+HOLD_EVAL_S = 6.0             # a hold row: the dataset's hold episodes are 5 s (0.5 + 4 + 0.5), plus a second
+HANDOFF_S = 0.5               # --hybrid: held on the pre-cut pose while the jaw opens before the slide (guess)
+HELD_OUT_ROW_START = 1_100_000   # --rows: past step 2's rows (930000 + 3000 * 30 parts, about 1020000)
 LOG_DIR = pathlib.Path.home() / ".cache" / "shear_sim" / "eval"
 
 
@@ -96,7 +116,24 @@ def judge(ep, scn, key, tgt):
     return why
 
 
-def rollout(policy, pre, post, meta, wants_env, seeds, turns, noise=None, viewer=None):
+def judge_hold(ep, scn):
+    """A hold row: the arm had nothing to cut and must have stayed home."""
+    mon, why = ep.mon, []
+    cut = [k for k, c in ep.cutters.items() if c.cut_t is not None]
+    if cut:
+        why.append(f"cut {cut} in a hold row")
+    for k, lim in ct.FORCE_LIMIT.items():
+        if mon.peak[k] > lim:
+            why.append(f"pressed the {k} with {mon.peak[k]:.1f} N ({mon.where.get(k)})")
+    off = float(np.abs(ep.q_now() - scn.start).max())
+    if off > st.END_START_TOL:
+        why.append(f"arm {np.degrees(off):.1f} deg off the start pose at the end")
+    return why
+
+
+def rollout(policy, pre, post, meta, wants_env, seeds, turns, noise=None, viewer=None, handoff=None, hold=False):
+    """One rollout on the row seeds. handoff: --hybrid's hand-off distance in metres (None = the policy all the way).
+    hold: a hold row (cue zeros, HOLD_EVAL_S, judge_hold)."""
     import torch
     from lerobot.policies.utils import make_robot_action, prepare_observation_for_inference
     from lerobot.processor import make_default_processors
@@ -105,44 +142,74 @@ def rollout(policy, pre, post, meta, wants_env, seeds, turns, noise=None, viewer
 
     from cameras import SimCameras
     scn = ct.Scene(seeds, turns=turns)
-    T = st.ShearTeacher(scn).plan()               # only for the target, its cue and its cut pose
-    p = T.plan_cut
-    key = (p.plant, p.node)
-    env = st.cue_env(scn, T.meta)
-    cut_at = tool_point(scn, p, np.asarray(p.slide[-1]))
     cams, fm = SimCameras(scn.m), arm_map.FollowerMap()
     ep = ct.Episode(scn, None)
-    ep.target = key
-    ep.mon.reset(p.prefix)
+    if hold:
+        T = p = key = tgt = None
+        env = np.zeros(len(st.ENV_NAMES), np.float32)
+        ep.mon.reset("")
+    else:
+        T = st.ShearTeacher(scn).plan()               # the target, its cue and its cut pose (and --hybrid's legs)
+        p = T.plan_cut
+        key = (p.plant, p.node)
+        env = st.cue_env(scn, T.meta)
+        cut_at = tool_point(scn, p, np.asarray(p.slide[-1]))
+        pre_at = tool_point(scn, p, np.asarray(p.slide[0]))   # the pre-cut pose: --hybrid's hand-off point
+        ep.target = key
+        ep.mon.reset(p.prefix)
+        tgt = ep.cutters[key]
     ep.mon.phase = "policy"
-    tgt = ep.cutters[key]
     _, _, rop = make_default_processors()
     obs_feats = {k: v for k, v in meta.features.items() if k != OBS_ENV_STATE}
     m, d = scn.m, scn.d
     live = viewer(scn) if viewer else None
     policy.reset()
     closest, still, frames, t_cut = np.inf, 0, 0, None
-    while ep.t < MAX_S:
+    handed, t_hand, mm_hand = None, None, None          # --hybrid: the frame the teacher took over
+    while ep.t < (HOLD_EVAL_S if hold else MAX_S):
         q6 = np.r_[d.qpos[scn.arm_adr], d.qpos[scn.jaw_adr]]
-        obs = {f"{j}.pos": float(v) for j, v in zip(arm_map.JOINTS, fm.rad_to_norm(q6))}
-        for c in ge.CAMERAS:
-            obs[c] = cams.rgb(d, c)
-        frame = build_dataset_frame(obs_feats, rop(obs), prefix=OBS_STR)
-        if wants_env:
-            frame[OBS_ENV_STATE] = env
-        with torch.inference_mode():
-            x = prepare_observation_for_inference(frame, policy.config.device, ge.TASK, "so_follower")
-            act = make_robot_action(post(policy.select_action(pre(x))), meta.features)
-        a = np.array([act[f"{j}.pos"] for j in arm_map.JOINTS], float)
-        dist = float(np.linalg.norm(tool_point(scn, p, q6[:5]) - cut_at))
-        if tgt.cut_t is None:
-            closest = min(closest, dist)
-        if noise is not None:
-            near = dist < NOISE_NEAR_M or tgt.cut_t is not None
-            a[:5] += noise("close" if near else "to_leaf")          # "close" is in NOISE_OFF: steps, adds 0
-        q = fm.norm_to_rad(a)
-        d.ctrl[scn.act] = q[:5]
-        d.ctrl[scn.jaw_act] = q[5]
+        if handoff is not None and handed is None:
+            d_pre = float(np.linalg.norm(tool_point(scn, p, q6[:5]) - pre_at))
+            if d_pre < handoff:
+                # the teacher's legs from the slide in, after a hold on the pre-cut pose that opens the jaw
+                # (to_leaf's jaw_to did that for the teacher; the policy may arrive with it anywhere)
+                k = next(i for i, g in enumerate(T.legs) if g.name == "slide_in")
+                bridge = st.Leg("handoff", hold=np.asarray(p.slide[0]), servo=True,
+                                jaw_to=(float(q6[5]), np.radians(ct.JAW_APPROACH_DEG)),
+                                frames=max(1, round(HANDOFF_S * ct.FPS)))
+                T.legs = [bridge] + T.legs[k:]
+                T.reset()
+                handed, t_hand, mm_hand = frames, round(ep.t, 2), round(d_pre * 1000, 1)
+        if handed is not None:
+            # ⚠️ shear_teacher.run's rule: the cut completes on the slide out; going home with the leaf still on
+            # would stall holding it, so stop there (the judge fails it anyway)
+            if T.done or (T.leg == "to_start" and tgt.cut_t is None):
+                break
+            a5, jaw = T.act(q6[:5])
+            ep.mon.phase = T.leg
+            d.ctrl[scn.act] = a5
+            d.ctrl[scn.jaw_act] = jaw
+        else:
+            obs = {f"{j}.pos": float(v) for j, v in zip(arm_map.JOINTS, fm.rad_to_norm(q6))}
+            for c in ge.CAMERAS:
+                obs[c] = cams.rgb(d, c)
+            frame = build_dataset_frame(obs_feats, rop(obs), prefix=OBS_STR)
+            if wants_env:
+                frame[OBS_ENV_STATE] = env
+            with torch.inference_mode():
+                x = prepare_observation_for_inference(frame, policy.config.device, ge.TASK, "so_follower")
+                act = make_robot_action(post(policy.select_action(pre(x))), meta.features)
+            a = np.array([act[f"{j}.pos"] for j in arm_map.JOINTS], float)
+            if not hold:
+                dist = float(np.linalg.norm(tool_point(scn, p, q6[:5]) - cut_at))
+                if tgt.cut_t is None:
+                    closest = min(closest, dist)
+                if noise is not None:
+                    near = dist < NOISE_NEAR_M or tgt.cut_t is not None
+                    a[:5] += noise("close" if near else "to_leaf")          # "close" is in NOISE_OFF: steps, adds 0
+            q = fm.norm_to_rad(a)
+            d.ctrl[scn.act] = q[:5]
+            d.ctrl[scn.jaw_act] = q[5]
         for s in range(ep.steps_per_frame):
             mujoco.mj_step(m, d)
             for c in ep.cutters.values():
@@ -155,22 +222,29 @@ def rollout(policy, pre, post, meta, wants_env, seeds, turns, noise=None, viewer
                 ep.mon.step()
         ep.t += 1.0 / ct.FPS
         frames += 1
-        if t_cut is None and tgt.cut_t is not None:
+        if not hold and t_cut is None and tgt.cut_t is not None:
             t_cut = round(ep.t, 2)
         if live and not live():
             break
-        home = float(np.abs(ep.q_now() - scn.start).max()) < st.END_START_TOL
-        still = still + 1 if (tgt.cut_t is not None and home) else 0
-        if still >= STILL_S * ct.FPS:
-            break
-    why = judge(ep, scn, key, tgt)
+        if not hold:
+            home = float(np.abs(ep.q_now() - scn.start).max()) < st.END_START_TOL
+            still = still + 1 if (tgt.cut_t is not None and home) else 0
+            if still >= STILL_S * ct.FPS:
+                break
     if live:
         live(close=True)
     cams.close()
-    return dict(success=not why, why=why, cut=tgt.cut_t is not None,
+    if hold:
+        why = judge_hold(ep, scn)
+        return dict(kind="hold", success=not why, why=why, cut=any(c.cut_t is not None for c in ep.cutters.values()),
+                    seconds=round(ep.t, 2), frames=frames, noise=None if noise is None else noise.sigma)
+    why = judge(ep, scn, key, tgt)
+    return dict(kind="cut", success=not why, why=why, cut=tgt.cut_t is not None,
                 stub_mm=None if tgt.stub is None else round(tgt.stub * 1000, 2),
                 closest_mm=round(closest * 1000, 1), t_cut=t_cut, seconds=round(ep.t, 2), frames=frames,
                 back_at_start=bool(still >= STILL_S * ct.FPS), leaf=T.meta.get("leaf"), plant=p.plant,
+                hybrid=handoff is not None, handoff_t=t_hand, handoff_mm=mm_hand,
+                policy_frames=frames if handed is None else handed,
                 noise=None if noise is None else noise.sigma, noise_max=None if noise is None else round(noise.max, 2))
 
 
@@ -203,16 +277,36 @@ def wilson(k, n, z=1.96):
     return max(0.0, c - h), min(1.0, c + h)
 
 
+def row_plan(row):
+    """(seeds, turns, why) for a row: why is None when the teacher can cut it, else the reason it can't."""
+    seeds = tuple(row + j for j in range(3))
+    turns, found = gc.best_turns(seeds, np.random.default_rng(0))   # check_teacher.scene_for's set-up
+    if not any(found):
+        return seeds, turns, "no pot angle gives a clean cut"
+    try:
+        st.ShearTeacher(ct.Scene(seeds, turns=turns)).plan()
+    except st.PlanError as e:
+        return seeds, turns, f"no plan: {e}"
+    return seeds, turns, None
+
+
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("policy", type=pathlib.Path, help="a checkpoint's pretrained_model folder")
-    ap.add_argument("--row", type=int, required=True, help="the row (seeds row, row+1, row+2)")
-    ap.add_argument("--rollouts", type=int, default=1)
+    ap.add_argument("--row", type=int, default=None, help="one row (seeds row, row+1, row+2), --rollouts times")
+    ap.add_argument("--rows", type=int, default=None, help="this many teacher-feasible rows from --row-start")
+    ap.add_argument("--row-start", type=int, default=HELD_OUT_ROW_START, help="--rows: the first row, then +3")
+    ap.add_argument("--holds", type=int, default=0, help="--rows: the first K rows the teacher can't cut too, as holds")
+    ap.add_argument("--rollouts", type=int, default=1, help="per row")
     ap.add_argument("--noise", type=float, default=0.0, help="noise std per arm joint, norm units (0 = off)")
     ap.add_argument("--ensemble", type=float, default=None, help="override temporal_ensemble_coeff (ACT)")
     ap.add_argument("--n-action-steps", type=int, default=None, help="override n_action_steps (ACT, no ensembling)")
+    ap.add_argument("--hybrid", action="store_true", help="the policy to the pre-cut pose, the teacher's slide after")
+    ap.add_argument("--handoff-mm", type=float, default=10.0, help="--hybrid: hand over this close to the pre-cut pose")
     ap.add_argument("--windowed", action="store_true", help="watch it live in a MuJoCo window (real time)")
     a = ap.parse_args()
+    if (a.row is None) == (a.rows is None):
+        ap.error("one of --row or --rows")
     import torch
     from lerobot.utils.constants import OBS_ENV_STATE
     # ⚠️ No register_third_party_plugins(): it imports B.L.U.S.H's so101_mujoco plugin, whose `cameras` import then
@@ -229,38 +323,70 @@ def main():
     wants_env = OBS_ENV_STATE in getattr(cfg, "input_features", {})
     mode = (f"ensemble {cfg.temporal_ensemble_coeff}" if getattr(cfg, "temporal_ensemble_coeff", None)
             else f"n_action_steps {cfg.n_action_steps}")
-    seeds = tuple(a.row + j for j in range(3))
-    turns, found = gc.best_turns(seeds, np.random.default_rng(0))   # check_teacher.scene_for's set-up
-    if not any(found):
-        sys.exit(f"row {a.row}: no pot angle gives a clean cut")
+    handoff = a.handoff_mm / 1000 if a.hybrid else None
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     run = path.parent.parent.parent.name
     log_path = LOG_DIR / f"{run}_{path.parent.name}_{time.strftime('%Y%m%d_%H%M%S')}.jsonl"
-    print(f"policy {path} ({cfg.type}) on {device}, {mode}; cue as numbers: {wants_env}; row {a.row}; "
-          f"noise {a.noise}\nlog {log_path}", flush=True)
-    results = []
+    where = f"row {a.row}" if a.row is not None else f"{a.rows} rows from {a.row_start} (+{a.holds} holds)"
+    print(f"policy {path} ({cfg.type}) on {device}, {mode}{', HYBRID' if a.hybrid else ''}; cue as numbers: "
+          f"{wants_env}; {where}; noise {a.noise}\nlog {log_path}", flush=True)
+    results, skipped = [], []
+    viewer = open_viewer if a.windowed else None
     with log_path.open("w") as log:
-        for i in range(a.rollouts):
-            noise = ge.Noise(a.noise, ge.NOISE_RHO, a.row, 1000 + i) if a.noise > 0 else None
-            r = rollout(policy, pre, post, meta, wants_env, seeds, turns, noise, open_viewer if a.windowed else None)
-            r.update(row=a.row, rollout=i, mode=mode)
-            results.append(r)
-            log.write(json.dumps(r, default=str) + "\n")
-            log.flush()
-            ok = sum(x["success"] for x in results)
-            print(f"  {'✅' if r['success'] else '❌'} rollout {i}: "
-                  f"{'cut' if r['cut'] else 'not cut'}, stub {r['stub_mm']} mm, closest {r['closest_mm']} mm, "
-                  f"cut at {r['t_cut']} s, {r['seconds']} s; {'; '.join(r['why']) or 'clean'}   "
-                  f"[{ok}/{len(results)} so far]", flush=True)
-        n, ok = len(results), sum(x["success"] for x in results)
+        row, n_cut, n_hold = (a.row if a.row is not None else a.row_start) - 3, 0, 0
+        while (a.row is not None and n_cut == 0) or (a.rows is not None and (n_cut < a.rows or n_hold < a.holds)):
+            row += 3
+            seeds, turns, why = row_plan(row)
+            if why is not None and a.row is not None:
+                sys.exit(f"row {a.row}: {why}")
+            hold = why is not None
+            if hold and n_hold >= a.holds:
+                skipped.append(dict(row=row, why=why))
+                print(f"  row {row}: skipped, {why[:90]}", flush=True)
+                continue
+            if not hold and a.rows is not None and n_cut >= a.rows:
+                continue
+            for i in range(a.rollouts):
+                noise = ge.Noise(a.noise, ge.NOISE_RHO, row, 1000 + i) if a.noise > 0 else None
+                r = rollout(policy, pre, post, meta, wants_env, seeds, turns, noise, viewer, handoff, hold)
+                r.update(row=row, rollout=i, mode=mode)
+                results.append(r)
+                log.write(json.dumps(r, default=str) + "\n")
+                log.flush()
+                cuts = [x for x in results if x["kind"] == "cut"]
+                ok = sum(x["success"] for x in cuts)
+                if hold:
+                    print(f"  {'✅' if r['success'] else '❌'} row {row} HOLD: "
+                          f"{'; '.join(r['why']) or 'stayed home'}", flush=True)
+                else:
+                    hand = "" if not a.hybrid else (f", hand-off at {r['handoff_t']} s ({r['handoff_mm']} mm)"
+                                                    if r["handoff_t"] is not None else ", no hand-off")
+                    print(f"  {'✅' if r['success'] else '❌'} row {row} rollout {i}: "
+                          f"{'cut' if r['cut'] else 'not cut'}, stub {r['stub_mm']} mm, closest {r['closest_mm']} mm, "
+                          f"cut at {r['t_cut']} s{hand}, {r['seconds']} s; "
+                          f"{'; '.join(r['why']) or 'clean'}   [{ok}/{len(cuts)} so far]", flush=True)
+            n_hold += hold
+            n_cut += not hold
+        cuts = [x for x in results if x["kind"] == "cut"]
+        holds = [x for x in results if x["kind"] == "hold"]
+        n, ok = len(cuts), sum(x["success"] for x in cuts)
         lo_, hi_ = wilson(ok, n)
+        stubs = sorted(x["stub_mm"] for x in cuts if x["stub_mm"] is not None)
         summary = dict(summary=True, n=n, success=ok, wilson95=[round(lo_, 3), round(hi_, 3)],
-                       cut=sum(x["cut"] for x in results), mode=mode, noise=a.noise,
-                       closest_median_mm=float(np.median([x["closest_mm"] for x in results])),
-                       t_cut=sorted(x["t_cut"] for x in results if x["t_cut"] is not None))
+                       cut=sum(x["cut"] for x in cuts), mode=mode, noise=a.noise, hybrid=a.hybrid,
+                       handoff_mm=a.handoff_mm if a.hybrid else None,
+                       handed_off=sum(x.get("handoff_t") is not None for x in cuts) if a.hybrid else None,
+                       closest_median_mm=float(np.median([x["closest_mm"] for x in cuts])) if cuts else None,
+                       stub_median_mm=stubs[len(stubs) // 2] if stubs else None,
+                       t_cut=sorted(x["t_cut"] for x in cuts if x["t_cut"] is not None),
+                       holds=len(holds), holds_ok=sum(x["success"] for x in holds),
+                       skipped=len(skipped), row_start=a.row if a.row is not None else a.row_start, last_row=row)
         log.write(json.dumps(summary) + "\n")
-    print(f"\n{ok}/{n} successes ({100 * ok / n:.0f} %, 95 % {100 * lo_:.0f}-{100 * hi_:.0f} %), target cut in "
-          f"{summary['cut']}; closest approach median {summary['closest_median_mm']} mm.  log {log_path}")
+    extra = f"; holds {summary['holds_ok']}/{summary['holds']}" if holds else ""
+    extra += f"; hand-off in {summary['handed_off']}" if a.hybrid else ""
+    extra += f"; {len(skipped)} rows not teacher-feasible" if skipped else ""
+    print(f"\n{ok}/{n} successes ({100 * ok / max(n, 1):.0f} %, 95 % {100 * lo_:.0f}-{100 * hi_:.0f} %), target cut in "
+          f"{summary['cut']}; closest approach median {summary['closest_median_mm']} mm{extra}.  log {log_path}")
     return 0
 
 
