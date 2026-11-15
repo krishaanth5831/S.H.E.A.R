@@ -135,9 +135,11 @@ def judge_hold(ep, scn):
     return why
 
 
-def rollout(policy, pre, post, meta, wants_env, seeds, turns, noise=None, viewer=None, handoff=None, hold=False):
+def rollout(policy, pre, post, meta, wants_env, seeds, turns, noise=None, viewer=None, handoff=None, hold=False,
+            kick=0):
     """One rollout on the row seeds. handoff: --hybrid's hand-off distance in metres (None = the policy all the way).
-    hold: a hold row (cue zeros, HOLD_EVAL_S, judge_hold)."""
+    hold: a hold row (cue zeros, HOLD_EVAL_S, judge_hold). kick: --kick-s in frames, the teacher drives a cut row's
+    first frames and the policy takes over (a diagnostic, not a success measure)."""
     import torch
     from lerobot.policies.utils import make_robot_action, prepare_observation_for_inference
     from lerobot.processor import make_default_processors
@@ -191,6 +193,10 @@ def rollout(policy, pre, post, meta, wants_env, seeds, turns, noise=None, viewer
                 break
             a5, jaw = T.act(q6[:5])
             ep.mon.phase = T.leg
+            d.ctrl[scn.act] = a5
+            d.ctrl[scn.jaw_act] = jaw
+        elif not hold and frames < kick:
+            a5, jaw = T.act(q6[:5])                   # --kick-s: the teacher's own start, clean (plan() has reset it)
             d.ctrl[scn.act] = a5
             d.ctrl[scn.jaw_act] = jaw
         else:
@@ -247,7 +253,7 @@ def rollout(policy, pre, post, meta, wants_env, seeds, turns, noise=None, viewer
                 stub_mm=None if tgt.stub is None else round(tgt.stub * 1000, 2),
                 closest_mm=round(closest * 1000, 1), t_cut=t_cut, seconds=round(ep.t, 2), frames=frames,
                 back_at_start=bool(still >= STILL_S * ct.FPS), leaf=T.meta.get("leaf"), plant=p.plant,
-                hybrid=handoff is not None, handoff_t=t_hand, handoff_mm=mm_hand,
+                hybrid=handoff is not None, handoff_t=t_hand, handoff_mm=mm_hand, kick_frames=kick,
                 policy_frames=frames if handed is None else handed,
                 noise=None if noise is None else noise.sigma, noise_max=None if noise is None else round(noise.max, 2))
 
@@ -317,6 +323,9 @@ def main():
     ap.add_argument("--n-action-steps", type=int, default=None, help="override n_action_steps (ACT, no ensembling)")
     ap.add_argument("--hybrid", action="store_true", help="the policy to the pre-cut pose, the teacher's slide after")
     ap.add_argument("--handoff-mm", type=float, default=10.0, help="--hybrid: hand over this close to the pre-cut pose")
+    ap.add_argument("--kick-s", type=float, default=0.0,
+                    help="diagnostic: the teacher drives the first K seconds of a cut row, then the policy (2026-11-15: "
+                         "act_teacher_v3 never left the start pose; this shows what the rest of the policy can do)")
     ap.add_argument("--windowed", action="store_true", help="watch it live in a MuJoCo window (real time)")
     a = ap.parse_args()
     if (a.row is None) == (a.rows is None):
@@ -338,9 +347,14 @@ def main():
     mode = (f"ensemble {cfg.temporal_ensemble_coeff}" if getattr(cfg, "temporal_ensemble_coeff", None)
             else f"n_action_steps {cfg.n_action_steps}")
     handoff = a.handoff_mm / 1000 if a.hybrid else None
+    if a.kick_s > 0:
+        mode += f", teacher's first {a.kick_s} s"
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     run = path.parent.parent.parent.name
-    log_path = LOG_DIR / f"{run}_{path.parent.name}_{time.strftime('%Y%m%d_%H%M%S')}.jsonl"
+    # the mode and the process id are in the name: two evals of one checkpoint started in the same second (policy alone
+    # and hybrid, 2026-11-15) opened the same file and wrote over each other
+    log_path = LOG_DIR / (f"{run}_{path.parent.name}{'_hybrid' if a.hybrid else ''}_"
+                          f"{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}.jsonl")
     where = f"row {a.row}" if a.row is not None else f"{a.rows} rows from {a.row_start} (+{a.holds} holds)"
     print(f"policy {path} ({cfg.type}) on {device}, {mode}{', HYBRID' if a.hybrid else ''}; cue as numbers: "
           f"{wants_env}; {where}; noise {a.noise}\nlog {log_path}", flush=True)
@@ -364,7 +378,8 @@ def main():
             for i in range(a.rollouts):
                 noise = ge.Noise(a.noise, ge.NOISE_RHO, row, 1000 + i) if a.noise > 0 else None
                 try:
-                    r = rollout(policy, pre, post, meta, wants_env, seeds, turns, noise, viewer, handoff, hold)
+                    r = rollout(policy, pre, post, meta, wants_env, seeds, turns, noise, viewer, handoff, hold,
+                                kick=round(a.kick_s * ct.FPS))
                 except st.PlanError as e:             # a stale ROW_CACHE entry: the teacher can't cut it any more
                     skipped.append(dict(row=row, why=f"cached as cuttable, but no plan: {e}"))
                     print(f"  row {row}: skipped, the cache says cuttable but the teacher finds no plan", flush=True)

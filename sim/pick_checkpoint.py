@@ -110,6 +110,8 @@ def main():
                 continue
             s = summary(m.group(1))
             ranked[tag] = row_of(s, ck, m.group(1))
+            # merged with the file as it is now: a second watcher (other eval arguments) writes the same ranking
+            ranked = {**(json.loads(out.read_text()) if out.exists() else {}), **ranked}
             out.write_text(json.dumps(ranked, indent=1))
             print(f"  {describe(ranked[tag])}", flush=True)
         if not a.watch:
