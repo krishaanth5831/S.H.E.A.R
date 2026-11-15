@@ -340,7 +340,10 @@ def main():
     handoff = a.handoff_mm / 1000 if a.hybrid else None
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     run = path.parent.parent.parent.name
-    log_path = LOG_DIR / f"{run}_{path.parent.name}_{time.strftime('%Y%m%d_%H%M%S')}.jsonl"
+    # the mode and the process id are in the name: two evals of one checkpoint started in the same second (policy alone
+    # and hybrid, 2026-11-15) opened the same file and wrote over each other
+    log_path = LOG_DIR / (f"{run}_{path.parent.name}{'_hybrid' if a.hybrid else ''}_"
+                          f"{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}.jsonl")
     where = f"row {a.row}" if a.row is not None else f"{a.rows} rows from {a.row_start} (+{a.holds} holds)"
     print(f"policy {path} ({cfg.type}) on {device}, {mode}{', HYBRID' if a.hybrid else ''}; cue as numbers: "
           f"{wants_env}; {where}; noise {a.noise}\nlog {log_path}", flush=True)
