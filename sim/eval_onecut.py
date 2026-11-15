@@ -309,7 +309,13 @@ def row_plan(row, cache=None):
             why = f"no plan: {e}"
     if cache is not None:
         cache[str(row)] = dict(turns=[float(x) for x in turns], why=why)
-        ROW_CACHE.write_text(json.dumps(cache))
+        try:                      # several tests fill the cache at once: take in what the others wrote meanwhile ...
+            cache.update({k: v for k, v in json.loads(ROW_CACHE.read_text()).items() if k not in cache})
+        except (OSError, json.JSONDecodeError):
+            pass
+        tmp = ROW_CACHE.with_name(f"{ROW_CACHE.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(cache))
+        os.replace(tmp, ROW_CACHE)                    # ... and swap the file in whole, so no reader sees half of it
     return seeds, turns, why
 
 
