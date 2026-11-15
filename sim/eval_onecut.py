@@ -196,7 +196,10 @@ def rollout(policy, pre, post, meta, wants_env, seeds, turns, noise=None, viewer
             d.ctrl[scn.act] = a5
             d.ctrl[scn.jaw_act] = jaw
         elif not hold and frames < kick:
+            if T.done:                                # --kick-s past the episode: the teacher alone, start to finish
+                break                                 # (2026-11-15: is a test row solvable at all, not only plannable)
             a5, jaw = T.act(q6[:5])                   # --kick-s: the teacher's own start, clean (plan() has reset it)
+            ep.mon.phase = T.leg
             d.ctrl[scn.act] = a5
             d.ctrl[scn.jaw_act] = jaw
         else:
@@ -316,6 +319,9 @@ def main():
     ap.add_argument("--row", type=int, default=None, help="one row (seeds row, row+1, row+2), --rollouts times")
     ap.add_argument("--rows", type=int, default=None, help="this many teacher-feasible rows from --row-start")
     ap.add_argument("--row-start", type=int, default=HELD_OUT_ROW_START, help="--rows: the first row, then +3")
+    ap.add_argument("--rows-from", type=pathlib.Path, default=None,
+                    help="a .jsonl of {row, kept}: the cut rows are its kept rows, in order (at most --rows), e.g. "
+                         "rows the teacher's own run solves; holds still come from --row-start")
     ap.add_argument("--holds", type=int, default=0, help="--rows: the first K rows the teacher can't cut too, as holds")
     ap.add_argument("--rollouts", type=int, default=1, help="per row")
     ap.add_argument("--noise", type=float, default=0.0, help="noise std per arm joint, norm units (0 = off)")
@@ -328,8 +334,14 @@ def main():
                          "act_teacher_v3 never left the start pose; this shows what the rest of the policy can do)")
     ap.add_argument("--windowed", action="store_true", help="watch it live in a MuJoCo window (real time)")
     a = ap.parse_args()
+    listed = None
+    if a.rows_from is not None:
+        listed = [r["row"] for r in (json.loads(ln) for ln in a.rows_from.expanduser().read_text().splitlines()
+                                     if ln.strip()) if r.get("kept") is True]
+        listed = listed[:a.rows] if a.rows is not None else listed
+        a.rows = len(listed)
     if (a.row is None) == (a.rows is None):
-        ap.error("one of --row or --rows")
+        ap.error("one of --row, --rows or --rows-from")
     import torch
     from lerobot.utils.constants import OBS_ENV_STATE
     # ⚠️ No register_third_party_plugins(): it imports B.L.U.S.H's so101_mujoco plugin, whose `cameras` import then
@@ -361,10 +373,19 @@ def main():
     results, skipped = [], []
     viewer = open_viewer if a.windowed else None
     cache = (json.loads(ROW_CACHE.read_text()) if ROW_CACHE.exists() else {}) if a.rows is not None else None
+    def candidates():
+        if listed is not None:
+            yield from listed                             # --rows-from: the cut rows, as listed
+        r = (a.row if a.row is not None else a.row_start) - 3
+        while True:                                       # then (for the holds, or with no list) the rows as they come
+            r += 3
+            if listed is None or r not in listed:
+                yield r
+
     with log_path.open("w") as log:
-        row, n_cut, n_hold = (a.row if a.row is not None else a.row_start) - 3, 0, 0
+        gen, n_cut, n_hold = candidates(), 0, 0
         while (a.row is not None and n_cut == 0) or (a.rows is not None and (n_cut < a.rows or n_hold < a.holds)):
-            row += 3
+            row = next(gen)
             seeds, turns, why = row_plan(row, cache)
             if why is not None and a.row is not None:
                 sys.exit(f"row {a.row}: {why}")
