@@ -395,8 +395,12 @@ direction as numbers. Plan and results: vault note "BLUSH + SHEAR Policy Post-Mo
 |---|---|---|
 | 0 | teacher + its three tests (`check_teacher.py`) | done: cuts 47 of 85 cuttable rows |
 | 1 | one row, 50 episodes, ACT: the pipeline check | passed at 45k steps (18 of 19 noisy rollouts) |
-| 2 | dataset v3 | done: `krish5831/shear_sim_teacher_v3`, 600 episodes (540 cuts, 60 holds), local only |
-| 3 | ACT on v3, a test at every 5k checkpoint; the hybrid alongside | set up, not started |
+| 2 | dataset v3 | done: `krish5831/shear_sim_teacher_v3`, 600 episodes (540 cuts, 60 holds), private on the Hub |
+| 3 | ACT on v3, a test at every 5k checkpoint; the hybrid alongside | done (100k steps), on the 50 held-out rows the teacher's own run solves (`sim/heldout_rows_v3.jsonl`, `eval_onecut.py --rows-from`): hybrid 20 of 50 (40 %), 30 of 40 on training rows; the policy alone 1 of 34 new rows, 0 of 40 training rows |
+
+Parked since 2026-11-16 (K7: B.L.U.S.H only for now). Step 3's reading: the policy alone doesn't learn to finish the
+cut even on rows it trained on, so the hybrid (policy approaches, teacher cuts) is S.H.E.A.R's route; the hybrid
+generalises worse than it fits (40 % new rows against 75 % training rows), so more rows would help it.
 
 ```bash
 python check_teacher.py push --row 910003 --windowed          # watch the teacher recover from a push
