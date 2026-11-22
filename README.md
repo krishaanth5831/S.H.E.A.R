@@ -72,7 +72,7 @@ Wayland the window has no title bar).
     python check_cut.py --windowed                       one leaf: the jaw closes, the blades cut it, it drops
     python check_layout.py --windowed                    the whole greenhouse scene ([ and ] switch to the cameras)
     python check_cutter.py --windowed                    the scripted cutter does a whole pass along the row
-    python check_teacher.py push --row 910003 --windowed teacher v3 is pushed mid-approach and still cuts
+    python check_teacher.py push --row 910003 --windowed teacher v3 is pushed mid-approach and steers back
 
 Heavy runs (rendering, recording, rollouts) go under a memory fuse so a runaway job can't
 freeze the machine, for example:
@@ -95,10 +95,11 @@ There is no pytest suite. Every step has a check script that prints PASS/FAIL pe
     python check_labels.py                     cut-point labels for the vision model (~10 s)
     python check_cutter.py                     a scripted pass on one known row (~30 s)
     python check_teacher.py repeat --row 910003   teacher v3 repeats itself exactly
-    python check_teacher.py push --row 910003     teacher v3 recovers from pushes
+    python check_teacher.py push --row 910003     teacher v3 pushed 1-2 cm mid-approach, still a clean cut?
 
-⚠️ `check_cutter.py` fails on its default row (700033) since the camera rig changed on
-2026-11-06; the other checks pass.
+Known failures (2026-11-22): `check_cutter.py` fails on its default
+row (700033) since the camera rig changed on 2026-11-06, and `check_teacher.py push` reports
+FAIL: only 15 of its 18 pushed runs still cut cleanly (it wants all). The other checks pass.
 
 Lint: `ruff check .` from the repo root (settings in `ruff.toml`).
 
