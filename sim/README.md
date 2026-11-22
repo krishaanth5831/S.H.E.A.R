@@ -280,7 +280,8 @@ These tools label the **birdseye** view, not the base camera.
 
 `generate_episodes.py` records scripted passes (step 5) as a LeRobot dataset. The current one is
 `krish5831/shear_sim_scripted_v1`: 200 passes on the v1 rig (796 rows tried, about 6.5 hours, 2026-11-06).
-The older `krish5831/shear_sim_scripted_v0` used the birdseye instead of the base camera.
+The older `krish5831/shear_sim_scripted_v0` used the birdseye instead of the base camera (deleted on 2026-11-08,
+with every SmolVLA checkpoint).
 
 - Every frame is recorded the way `lerobot-record` does it, at 30 fps:
   - `observation.state`: the 6 joints in lerobot's `use_degrees=false` units, through the real follower's
@@ -324,10 +325,10 @@ while the policy drives: that would teach its mistakes.
 
 On 2026-11-05, 100 correction episodes were appended to `shear_sim_scripted_v0` (now 300 episodes; the 200-pass
 original is backed up as `shear_sim_scripted_v0_backup_200eps`). That data trained v2 (`expert-v2` in
-`policy/train_smolvla_lora.sh`), which still cut nothing.
+`policy/train_smolvla_lora.sh`), which still cut nothing. Both datasets and the v2 policy were deleted on 2026-11-08.
 
 ⚠️ Appending changes the dataset in place: back it up first. Without `--repo-id`, the script now appends to
-`generate_episodes.py`'s dataset, which is v1, the current training set. Use `--new` to create a fresh one.
+`generate_episodes.py`'s dataset, which is v1, the scripted cutter's 200 passes. Use `--new` to create a fresh one.
 
 ## Testing a trained policy
 
