@@ -336,8 +336,9 @@ def main():
     ap.add_argument("--hybrid", action="store_true", help="the policy to the pre-cut pose, the teacher's slide after")
     ap.add_argument("--handoff-mm", type=float, default=10.0, help="--hybrid: hand over this close to the pre-cut pose")
     ap.add_argument("--kick-s", type=float, default=0.0,
-                    help="diagnostic: the teacher drives the first K seconds of a cut row, then the policy (2026-11-15: "
-                         "act_teacher_v3 never left the start pose; this shows what the rest of the policy can do)")
+                    help="diagnostic: the teacher drives the first K seconds of a cut row, then the policy "
+                         "(2026-11-15: act_teacher_v3 never left the start pose; this shows what the rest of the "
+                         "policy can do)")
     ap.add_argument("--windowed", action="store_true", help="watch it live in a MuJoCo window (real time)")
     a = ap.parse_args()
     listed = None
