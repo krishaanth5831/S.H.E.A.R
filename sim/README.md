@@ -280,7 +280,8 @@ These tools label the **birdseye** view, not the base camera.
 
 `generate_episodes.py` records scripted passes (step 5) as a LeRobot dataset. The current one is
 `krish5831/shear_sim_scripted_v1`: 200 passes on the v1 rig (796 rows tried, about 6.5 hours, 2026-11-06).
-The older `krish5831/shear_sim_scripted_v0` used the birdseye instead of the base camera.
+The older `krish5831/shear_sim_scripted_v0` used the birdseye instead of the base camera (deleted on 2026-11-08,
+with every SmolVLA checkpoint).
 
 - Every frame is recorded the way `lerobot-record` does it, at 30 fps:
   - `observation.state`: the 6 joints in lerobot's `use_degrees=false` units, through the real follower's
@@ -324,10 +325,10 @@ while the policy drives: that would teach its mistakes.
 
 On 2026-11-05, 100 correction episodes were appended to `shear_sim_scripted_v0` (now 300 episodes; the 200-pass
 original is backed up as `shear_sim_scripted_v0_backup_200eps`). That data trained v2 (`expert-v2` in
-`policy/train_smolvla_lora.sh`), which still cut nothing.
+`policy/train_smolvla_lora.sh`), which still cut nothing. Both datasets and the v2 policy were deleted on 2026-11-08.
 
 ⚠️ Appending changes the dataset in place: back it up first. Without `--repo-id`, the script now appends to
-`generate_episodes.py`'s dataset, which is v1, the current training set. Use `--new` to create a fresh one.
+`generate_episodes.py`'s dataset, which is v1, the scripted cutter's 200 passes. Use `--new` to create a fresh one.
 
 ## Testing a trained policy
 
@@ -395,8 +396,12 @@ direction as numbers. Plan and results: vault note "BLUSH + SHEAR Policy Post-Mo
 |---|---|---|
 | 0 | teacher + its three tests (`check_teacher.py`) | done: cuts 47 of 85 cuttable rows |
 | 1 | one row, 50 episodes, ACT: the pipeline check | passed at 45k steps (18 of 19 noisy rollouts) |
-| 2 | dataset v3 | done: `krish5831/shear_sim_teacher_v3`, 600 episodes (540 cuts, 60 holds), local only |
-| 3 | ACT on v3, a test at every 5k checkpoint; the hybrid alongside | set up, not started |
+| 2 | dataset v3 | done: `krish5831/shear_sim_teacher_v3`, 600 episodes (540 cuts, 60 holds), private on the Hub |
+| 3 | ACT on v3, a test at every 5k checkpoint; the hybrid alongside | done (100k steps), on the 50 held-out rows the teacher's own run solves (`sim/heldout_rows_v3.jsonl`, `eval_onecut.py --rows-from`): hybrid 20 of 50 (40 %), 30 of 40 on training rows; the policy alone 1 of 34 new rows, 0 of 40 training rows |
+
+Parked since 2026-11-16 (K7: B.L.U.S.H only for now). Step 3's reading: the policy alone doesn't learn to finish the
+cut even on rows it trained on, so the hybrid (policy approaches, teacher cuts) is S.H.E.A.R's route; the hybrid
+generalises worse than it fits (40 % new rows against 75 % training rows), so more rows would help it.
 
 ```bash
 python check_teacher.py push --row 910003 --windowed          # watch the teacher recover from a push

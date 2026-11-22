@@ -1,109 +1,149 @@
 # S.H.E.A.R (Selective Harvest of Excess And Redundant leaves)
 
 Vinea's deleafing and pruning module, built on an SO-101 arm. The arm cuts old tomato
-leaves off flush at the stem, using the stock rigid jaws with a blade at the tips. A fixed
-rule picks the leaves. The grower sets that rule's parameters (how far up to strip, how many
-leaves to keep, how many cuts per pass). The learned part is the cut itself.
+leaves off flush at the stem, using the stock rigid jaws with a blade at the tips. It cuts;
+it never snaps a leaf off. A fixed rule picks the leaves. The grower sets that rule's
+parameters (how far up to strip, how many leaves to keep, how many cuts per pass). The
+learned part is the cut itself.
 
 v1 is deleafing. Side-shoot pruning and truss pruning are on the roadmap.
 
 The plan and the research behind the rule are in the Vinea vault, under `08 Modules/SHEAR/`.
 
-## Where it stands (2026-11-08)
+## Where it stands (2026-11-22)
 
-Everything so far runs in a MuJoCo simulation. Nothing has run on the real arm yet.
+Everything so far runs in a MuJoCo simulation. **Nothing has run on the real arm yet**, and
+the cut force, plant sizes and blade forces in the code are sim estimates or guesses marked
+`unverified` until they are measured.
 
-- **The sim is built** (`sim/`, details in `sim/README.md`): the cut itself, random dwarf cherry tomato
-  plants, the leaf rule, the mini greenhouse with three potted plants, and a scripted cutter that plans
-  every arm move with RRT and does a full deleafing pass along the row.
-- **The cameras changed on 2026-11-06 (the "v1 rig").** The policy now sees a **base camera** (low, on a
-  bracket next to the arm's base) and the **claw camera** on the wrist. The old birdseye camera on a mast
-  behind the row is still in the scene, but only the label tools use it.
-- **Training data:** `krish5831/shear_sim_scripted_v1`, 200 scripted passes recorded on the v1 rig
-  (private on the Hugging Face Hub, also local).
-- **Policy:** SmolVLA. v3 trained to 50k steps (`krish5831/shear_smolvla_v3`). v3b carries on from v3's
-  50k weights with a fixed learning-rate schedule (`krish5831/shear_smolvla_v3b`). Neither cuts reliably
-  yet (see "Policy" below).
+**Parked since 2026-11-16.** Work is on Vinea's harvest module (B.L.U.S.H) for now; what is
+learned there comes back here.
+
+- **The sim is built** (`sim/`, details in `sim/README.md`): the cut itself, random dwarf
+  cherry tomato plants, the leaf rule, the mini greenhouse with three potted plants, the
+  cameras (a low **base camera** beside the arm and the **claw camera** on the wrist), and a
+  scripted cutter that plans every arm move with RRT.
+- **Teacher v3** (`sim/shear_teacher.py`): a deterministic, closed-loop cutter that makes one
+  cut per episode and can steer back after a push. It cuts 47 of the 85 rows it can plan.
+  This replaced the scripted cutter as the source of training data.
+- **Dataset:** `krish5831/shear_sim_teacher_v3`, 600 teacher episodes (540 cuts, 60 "hold"
+  episodes where the arm stays home), private on the Hugging Face Hub.
+- **Policy:** ACT, trained 100k steps on that dataset (`policy/train_act_teacher.sh`). It gets
+  the joint angles, both camera images, and the cut point and petiole direction as numbers.
+  On its own it does not finish the cut, even on rows it trained on. The **hybrid** works
+  better: the policy drives up to the leaf, then the teacher does the last slide and the
+  cut. The hybrid cut 20 of 50 held-out rows the teacher can solve, and 30 of 40 training
+  rows. ⚠️ In sim the teacher's slide knows the exact cut point, so this only tests the
+  approach.
 - **No vision model (YOLO) is trained yet.** The sim makes the labels for it.
+
+The first try, SmolVLA trained on the scripted cutter, never cut reliably and was dropped
+on 2026-11-08. Its checkpoints and the v0 dataset were deleted; the scripts are still in
+`policy/` (see "Earlier route" below).
 
 ## What is where
 
     rule/      the leaf rule (plain Python, no MuJoCo) and its hand-checked test cases
-    sim/       the MuJoCo sim, the scripted cutter, dataset recording, policy rollouts
-    policy/    SmolVLA training: a laptop script and a Colab/Kaggle notebook
-    outputs/   local training runs (not in git)
+    sim/       the MuJoCo sim: plants, scene, cut model, IK, RRT, scripted cutter, teacher v3,
+               dataset recording, policy evaluation (sim/README.md lists every file)
+    policy/    training scripts: ACT on teacher data (current), SmolVLA (earlier route)
+    outputs/   local training runs, logs and evals (not in git)
 
-## Try it
+## Setup
 
+You need Linux with a display (for the viewer windows), conda, and an NVIDIA GPU only for
+training and GPU rollouts.
+
+1. A conda env called `lerobot` with LeRobot and MuJoCo 3.8.1 (the sim was built and tested
+   on 3.8.1). The same env is shared with B.L.U.S.H.
+2. Download the SO-101 model once (from TheRobotStudio/SO-ARM100, into `sim/assets/so101/`,
+   which is gitignored):
+
+       cd sim
+       ./fetch_so101.sh
+
+3. Activate the env: `conda activate lerobot`.
+
+## Open the sim viewer
+
+Run these from `sim/`. Each opens a MuJoCo window; close it with Ctrl+C in the terminal (on
+Wayland the window has no title bar).
+
+    python check_cut.py --windowed                       one leaf: the jaw closes, the blades cut it, it drops
+    python check_layout.py --windowed                    the whole greenhouse scene ([ and ] switch to the cameras)
+    python check_cutter.py --windowed                    the scripted cutter does a whole pass along the row
+    python check_teacher.py push --row 910003 --windowed teacher v3 is pushed mid-approach and steers back
+
+Heavy runs (rendering, recording, rollouts) go under a memory fuse so a runaway job can't
+freeze the machine, for example:
+
+    systemd-run --user --scope -q -p MemoryMax=9G -p MemorySwapMax=0 python check_cutter.py
+
+Don't use `ulimit -v` instead: the lerobot import reserves so much address space that the
+offscreen renderer then fails.
+
+## Tests
+
+There is no pytest suite. Every step has a check script that prints PASS/FAIL per case:
+
+    python rule/check_rule.py                  from the repo root: the leaf rule's hand-checked cases, no MuJoCo
     cd sim
-    ./fetch_so101.sh                     once: downloads the SO-101 model
-    conda activate lerobot
-    python check_cut.py --windowed       a window opens: the jaw closes, the blades cut a leaf, it drops
-    python check_cutter.py --windowed    a window opens: the scripted cutter does a whole pass along the row
+    python check_cut.py                        the cut (a few seconds)
+    python check_plant.py                      random plants and the rule's labels (~20 s)
+    python check_layout.py                     the scene and the cameras
+    python check_approach.py                   the cut across the ways the arm meets a leaf (~20 s)
+    python check_labels.py                     cut-point labels for the vision model (~10 s)
+    python check_cutter.py                     a scripted pass on one known row (~30 s)
+    python check_teacher.py repeat --row 910003   teacher v3 repeats itself exactly
+    python check_teacher.py push --row 910003     teacher v3 pushed 1-2 cm mid-approach, still a clean cut?
 
-Each step of the sim has a check that prints PASS/FAIL and a `--windowed` view to watch. All of them are
-in `sim/README.md`.
+Known failures (2026-11-22): `check_cutter.py` fails on its default
+row (700033) since the camera rig changed on 2026-11-06, and `check_teacher.py push` reports
+FAIL: only 15 of its 18 pushed runs still cut cleanly (it wants all). The other checks pass.
 
-## Policy: SmolVLA trained on the scripted passes
+Lint: `ruff check .` from the repo root (settings in `ruff.toml`).
 
-The policy is SmolVLA (`lerobot/smolvla_base`), fine-tuned to copy the scripted cutter: it gets the joint
-angles, the two camera images and a task sentence, and it outputs the next arm moves.
+## Training and evaluating the policy
 
-### Training
+All of this is described step by step in `sim/README.md` under "Teacher v3 pipeline". In short:
 
-There are two ways to train:
+    # record teacher episodes (one process per 20-episode part)
+    cd sim && python generate_episodes.py --teacher --no-dr --hold-share 0.10 --noise-share 0.5 \
+        --row-start 930000 --episodes 20 --max-attempts 900 --repo-id krish5831/shear_sim_teacher_v3_p00
+    # train ACT (from the repo root, GPU, outside Claude Code's sandbox)
+    RUN=act_teacher_v3 policy/train_act_teacher.sh krish5831/shear_sim_teacher_v3
+    # watch a checkpoint drive (from sim/)
+    python eval_onecut.py ../outputs/train/act_teacher_v3/checkpoints/<step>/pretrained_model --rows 3 \
+        --n-action-steps 100 --windowed
+    # the held-out test, policy alone and hybrid
+    python eval_onecut.py <checkpoint>/pretrained_model --rows-from heldout_rows_v3.jsonl --n-action-steps 100
+    python eval_onecut.py <checkpoint>/pretrained_model --rows-from heldout_rows_v3.jsonl --n-action-steps 100 --hybrid
 
-- **On the laptop GPU** (6 GB): `policy/train_smolvla_lora.sh <mode>`. Run it outside Claude Code's sandbox
-  (the GPU isn't visible inside it), in the lerobot env.
+Nothing is pushed to the Hub by these scripts.
 
-  | mode | what it trains | data | output (`outputs/train/`) |
-  |---|---|---|---|
-  | `smoke`, `full` | v0: LoRA adapters only, 20k steps | `shear_sim_scripted_v0` | `shear_smolvla_lora_v0` |
-  | `expert-smoke`, `expert` | v1: the whole action expert, no LoRA, 40k steps | `shear_sim_scripted_v0` | `shear_smolvla_expert_v1` |
-  | `expert-v2` | v2: v1 carried on, 20k steps | v0 + 100 correction episodes | `shear_smolvla_expert_v2` |
-  | `v3-smoke`, `v3` | v3: action expert **and** vision encoder, 100k steps | `shear_sim_scripted_v1` | `shear_smolvla_v3` |
+## Earlier route: SmolVLA on the scripted cutter
 
-  The v3 modes need `python policy/patch_lerobot_smolvla.py` run once on the installed lerobot. Without
-  it, lerobot freezes the vision encoder anyway, and fp16 training crashes on the bfloat16 weights.
+Until 2026-11-08 the policy was SmolVLA (`lerobot/smolvla_base`) fine-tuned on
+passes of the scripted cutter (`krish5831/shear_sim_scripted_v1`, 200 passes, still on the
+Hub). No version cut reliably; the post-mortem (vault note "BLUSH + SHEAR Policy
+Post-Mortem") found the main cause: the scripted cutter picked its leaf by a search the
+camera can't see, and SmolVLA had no input for the target. The scripts stay for reference:
 
-- **On a free T4 GPU, Google Colab or Kaggle**: `policy/colab_train_v3.ipynb`. v3 was trained this way,
-  and v3b is being trained this way now. The notebook installs the pinned lerobot, applies the same patch, trains, and saves a
-  checkpoint to the Hub every 5k steps. If the session dies, run it again and it picks up from the last
-  checkpoint. The notebook's first cell explains the setup for each platform.
-
-Once a checkpoint exists, watch it drive the sim arm (next section).
-  - v3: from `lerobot/smolvla_base`, stopped at 50k steps, repo `krish5831/shear_smolvla_v3`.
-  - v3b (the notebook's current setting, in training): starts from v3's step-50k weights, with a short warm-up and a
-    learning rate that slows down over exactly the 30k steps of the run (one 12-hour Kaggle session).
-    Why: v3's preset schedule had already dropped the learning rate to its floor at 30k, so the loss
-    hardly moved after that (0.042 at 30k, 0.037 at 50k). Repo `krish5831/shear_smolvla_v3b`.
-
-⚠️ **Camera names.** SmolVLA expects cameras called `camera1`, `camera2`, ... The base camera becomes
-`camera1` and the claw `camera2`. This map is saved inside each checkpoint, and `sim/rollout_policy.py`
-uses the saved one. The v0, v1 and v2 checkpoints were trained on the birdseye, so by the code they
-expect a birdseye image that today's sim no longer gives them: use v3 or later.
-
-### Testing a checkpoint
-
-The training loss says little about whether the arm cuts, so every checkpoint is tested in the sim on
-plants it never saw. Download one, then watch it:
-
-    hf download krish5831/shear_smolvla_v3 --include "checkpoints/050000/pretrained_model/*" --local-dir outputs/train/shear_smolvla_v3_hub
-    python sim/rollout_policy.py --ckpt outputs/train/shear_smolvla_v3_hub/checkpoints/050000/pretrained_model --rtc 10 --smooth 0.5 --windowed --rows 1
-
-For v3b, swap in `shear_smolvla_v3b` and a step that is already on the Hub (a checkpoint lands every 5k steps).
-
-Without `--windowed` it runs 10 rows, records videos, and scores every cut against the rule, next to the
-scripted cutter on the same rows. All its options, and `sim/check_replay.py` (which checks the dataset
-itself), are in `sim/README.md` under "Testing a trained policy".
-
-What the tests show so far (local rollouts, 10 rows each):
-- v1 made no cut, and pressed something it mustn't in every row.
-- The v3 checkpoints from 5k to 40k steps (run with `--rtc 10`) made at most one right cut in 10 rows, none
-  of them flush, and pressed something they mustn't in nearly every row. 50k has only 2 rows scored so far.
-- The scripted cutter cut 9 of the rule's 52 leaves on the same rows.
+- `policy/train_smolvla_lora.sh <mode>`: laptop training (modes v0 to v3, see the script).
+- `policy/colab_train_v3.ipynb`: the same on a free Colab/Kaggle T4.
+- `policy/patch_lerobot_smolvla.py`: the lerobot patch the v3 modes need (trains the vision
+  encoder, fixes fp16 on bfloat16 weights).
+- `sim/rollout_policy.py`, `sim/generate_corrections.py`, `sim/check_replay.py`: rollouts,
+  sim DAgger and the dataset replay check for that route (documented in `sim/README.md`).
 
 ## Git
 
 Work happens on `dev`. `main` is protected and only takes PRs from `dev`; the
 `only-dev-into-main` check enforces that.
+
+## License
+
+Source-available, not open source. Copyright (c) 2026 Krishaanth Ramaraj. You may read and
+use the code under the PolyForm Strict License 1.0.0 (see `LICENSE`); commercial use,
+modification and redistribution need a separate written license. Third-party files keep
+their own licenses (see `sim/NOTICE.md`).
